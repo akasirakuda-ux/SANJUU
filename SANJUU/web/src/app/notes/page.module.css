@@ -1,0 +1,125 @@
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.h1 {
+  font-size: 1.35rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.section {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.sectionTitle {
+  font-size: 1rem;
+  font-weight: 800;
+  margin: 0 0 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.btnPrimary {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: none;
+  font-weight: 800;
+  cursor: pointer;
+  background: #2563eb;
+  color: #fff;
+}
+
+.btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btnSecondary {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-weight: 700;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  text-align: left;
+  border-radius: 10px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  color: inherit;
+  width: 100%;
+}
+
+.card:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.card:hover {
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+.cardTitle {
+  font-weight: 800;
+  font-size: 1rem;
+  margin: 0 0 6px;
+}
+
+.cardMeta {
+  font-size: 0.88rem;
+  opacity: 0.9;
+  margin: 0 0 10px;
+}
+
+.muted {
+  font-size: 0.9rem;
+  opacity: 0.75;
+  margin: 0;
+}
+
+.memo {
+  width: 100%;
+  min-height: 140px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.back {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.back a {
+  color: #93c5fd;
+}

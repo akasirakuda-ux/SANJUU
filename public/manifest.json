@@ -1,0 +1,40 @@
+{
+  "name": "ことば探し Pro",
+  "short_name": "ことば探し",
+  "description": "究極の日本語ワードサーチゲーム",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ecfdf5",
+  "theme_color": "#00c874",
+  "icons": [
+    {
+      "src": "/pwa-512x512.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "あそぶ",
+      "short_name": "あそぶ",
+      "description": "ゲームを始める",
+      "url": "./?action=play",
+      "icons": [{ "src": "/pwa-512x512.svg", "sizes": "192x192", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "ログ",
+      "short_name": "ログ",
+      "description": "これまでの記録を見る",
+      "url": "./?action=logs",
+      "icons": [{ "src": "/pwa-512x512.svg", "sizes": "192x192", "type": "image/svg+xml" }]
+    }
+  ]
+}

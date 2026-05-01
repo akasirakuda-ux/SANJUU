@@ -1,0 +1,21 @@
+{
+  "name": "sanjuu",
+  "private": true,
+  "workspaces": [
+    "web",
+    "ws"
+  ],
+  "scripts": {
+    "dev:web": "npm -w web run dev",
+    "dev:ws": "npm -w ws run dev",
+    "dev": "concurrently --shell cmd.exe -n web,ws -c blue,green \"npm:dev:web\" \"npm:dev:ws\"",
+    "build": "npm -w web run build && npm -w ws run build",
+    "start": "npm -w ws run start & npm -w web run start",
+    "lint": "npm -w web run lint && npm -w ws run lint",
+    "loadtest": "npm -w ws run loadtest"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  }
+}
+

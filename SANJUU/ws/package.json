@@ -1,0 +1,23 @@
+{
+  "name": "sanjuu-ws",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "loadtest": "tsx src/loadtest.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9",
+    "tsx": "^4.20.5",
+    "typescript": "^5"
+  }
+}
+

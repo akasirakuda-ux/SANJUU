@@ -1,0 +1,94 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.main {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.title {
+  font-size: 34px;
+  letter-spacing: -1px;
+  font-weight: 700;
+}
+
+.sub {
+  color: color-mix(in oklab, var(--foreground) 55%, transparent);
+  font-size: 14px;
+}
+
+.card {
+  border: 1px solid color-mix(in oklab, var(--foreground) 20%, transparent);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.label input {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+  padding: 0 12px;
+  background: transparent;
+  color: inherit;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.primary {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 35%, transparent);
+  background: var(--foreground);
+  color: var(--background);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secondary {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+  background: transparent;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.small {
+  font-size: 12px;
+  color: color-mix(in oklab, var(--foreground) 60%, transparent);
+}
+
+@media (max-width: 600px) {
+  .title {
+    font-size: 28px;
+  }
+}

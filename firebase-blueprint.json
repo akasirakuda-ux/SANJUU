@@ -1,0 +1,287 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A collaborative game room.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["waiting", "start", "playing", "finished"] },
+        "problemId": { "type": "string" },
+        "hostId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["status", "hostId"]
+    },
+    "RoomPlayer": {
+      "title": "RoomPlayer",
+      "description": "A player in a room.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "joinedAt": { "type": "number" },
+        "isHost": { "type": "boolean" }
+      },
+      "required": ["name", "joinedAt", "isHost"]
+    },
+    "RoomBoard": {
+      "title": "RoomBoard",
+      "description": "The game board data.",
+      "type": "object",
+      "properties": {
+        "grid": { "type": "array", "items": { "type": "string" } },
+        "words": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "RoomProgress": {
+      "title": "RoomProgress",
+      "description": "The game progress and answers.",
+      "type": "object",
+      "properties": {
+        "answers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "word": { "type": "string" },
+                "color": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ZakkiEntry": {
+      "title": "ZakkiEntry",
+      "description": "A public guestbook entry for Rakuda Kissa.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "nickname": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["safe", "danger"] },
+        "dangerReason": { "type": "string", "enum": ["text", "image", "blockedUser", null] },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["text", "nickname", "timestamp", "userId", "status"]
+    },
+    "BlockedUser": {
+      "title": "BlockedUser",
+      "description": "A user who has been blocked by the owner.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "blockedAt": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string" }
+      },
+      "required": ["userId", "blockedAt"]
+    },
+    "RakudaMessage": {
+      "title": "RakudaMessage",
+      "description": "A private message to the author (Rakuda-san).",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "nickname": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "msgCount": { "type": "number" },
+        "read": { "type": "boolean", "description": "Whether the message has been read by the owner." }
+      },
+      "required": ["text", "nickname", "timestamp", "userId", "read"]
+    },
+    "UserLog": {
+      "title": "UserLog",
+      "description": "A system log entry for a specific user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "type": { "type": "string" },
+        "tag": { "type": "string" },
+        "message": { "type": "string" },
+        "emoji": { "type": "string" },
+        "details": { "type": "object" }
+      },
+      "required": ["id", "timestamp", "type", "tag", "message"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account information and progress.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "nickname": { "type": "string" },
+        "totalPoints": { "type": "number" },
+        "completedDates": { "type": "array", "items": { "type": "string" } },
+        "specialDates": { "type": "array", "items": { "type": "string" } },
+        "isOwner": { "type": "boolean" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "nickname", "totalPoints", "completedDates", "specialDates"]
+    },
+    "ZakkichoPresence": {
+      "title": "ZakkichoPresence",
+      "description": "A temporary record of a user currently viewing the Zakkicho.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "lastActive": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "lastActive"]
+    },
+    "CustomerNotebook": {
+      "title": "CustomerNotebook",
+      "description": "The AI's memory about a specific customer.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "profile": { "type": "string" },
+        "topics": { "type": "array", "items": { "type": "string" } },
+        "lastUpdate": { "type": "number" }
+      },
+      "required": ["name", "profile", "topics", "lastUpdate"]
+    },
+    "RenrakuPublic": {
+      "title": "RenrakuPublic",
+      "description": "Public messages in the contact book.",
+      "type": "object",
+      "properties": {
+        "message": { "type": "string" },
+        "fromUser": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["message", "fromUser", "createdAt"]
+    },
+    "RenrakuPrivate": {
+      "title": "RenrakuPrivate",
+      "description": "Private messages to Rakuda.",
+      "type": "object",
+      "properties": {
+        "message": { "type": "string" },
+        "fromUser": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isRead": { "type": "boolean" }
+      },
+      "required": ["message", "fromUser", "createdAt", "isRead"]
+    },
+    "RenrakuPresence": {
+      "title": "RenrakuPresence",
+      "description": "A temporary record of a user currently viewing the Renrakucho.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "emoji": { "type": "string" },
+        "lastActive": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "emoji", "lastActive"]
+    },
+    "BlockedUserRenraku": {
+      "title": "BlockedUserRenraku",
+      "description": "Users blocked from posting in Renrakucho.",
+      "type": "object",
+      "properties": {
+        "userName": { "type": "string" },
+        "blockedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userName", "blockedAt"]
+    },
+    "TestRoom": {
+      "title": "TestRoom",
+      "description": "A simple test room for multiplayer synchronization.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["waiting", "start", "playing", "finished"] },
+        "hostId": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "tappedNumbers": { "type": "array", "items": { "type": "number" } }
+      },
+      "required": ["status", "hostId"]
+    },
+    "TestPlayer": {
+      "title": "TestPlayer",
+      "description": "A player in a test room.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "score": { "type": "number" },
+        "isReady": { "type": "boolean" },
+        "joinedAt": { "type": "number" }
+      },
+      "required": ["name", "score", "isReady", "joinedAt"]
+    }
+  },
+  "firestore": {
+    "/multiplayer_test_rooms/{roomId}": {
+      "schema": "TestRoom",
+      "description": "Test room document."
+    },
+    "/multiplayer_test_rooms/{roomId}/players/{playerId}": {
+      "schema": "TestPlayer",
+      "description": "Players in the test room."
+    },
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "The main room document."
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": "RoomPlayer",
+      "description": "Players in the room."
+    },
+    "/rooms/{roomId}/board/data": {
+      "schema": "RoomBoard",
+      "description": "Board data."
+    },
+    "/rooms/{roomId}/progress/data": {
+      "schema": "RoomProgress",
+      "description": "Progress data."
+    },
+    "/zakkicho/{entryId}": {
+      "schema": "ZakkiEntry",
+      "description": "Public guestbook entries."
+    },
+    "/zakkicho_presence/{sessionId}": {
+      "schema": "ZakkichoPresence",
+      "description": "Real-time viewer tracking for Zakkicho."
+    },
+    "/blocked_users/{userId}": {
+      "schema": "BlockedUser",
+      "description": "Users blocked by the owner."
+    },
+    "/messages_to_rakuda/{messageId}": {
+      "schema": "RakudaMessage",
+      "description": "Private messages to the author."
+    },
+    "/users/{userId}/logs/{logId}": {
+      "schema": "UserLog",
+      "description": "System logs for a specific user."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile and progress data."
+    },
+    "/customer_notebooks/{userId}": {
+      "schema": "CustomerNotebook",
+      "description": "The AI's memory for a specific user."
+    },
+    "/renraku_public/{messageId}": {
+      "schema": "RenrakuPublic",
+      "description": "Public contact book messages."
+    },
+    "/renraku_private/{messageId}": {
+      "schema": "RenrakuPrivate",
+      "description": "Private messages to Rakuda."
+    },
+    "/renraku_presence/{userId}": {
+      "schema": "RenrakuPresence",
+      "description": "Real-time viewer tracking for Renrakucho."
+    },
+    "/blockedUsers/{userId}": {
+      "schema": "BlockedUserRenraku",
+      "description": "Users blocked from Renrakucho."
+    }
+  }
+}

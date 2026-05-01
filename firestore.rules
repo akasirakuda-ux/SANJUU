@@ -1,0 +1,236 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // 匿名ログイン（UID使い捨て）はブロック回避されやすいが、
+    // 公開運用では「一般ユーザーが書き込めない」方が致命的なため、
+    // 掲示板系の create はログイン済み（匿名含む）を許可する。
+    function isGoogleSignedIn() {
+      return isSignedIn()
+        && request.auth.token.firebase != null
+        && request.auth.token.firebase.sign_in_provider is string
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    // 管理者 UID（src/constants/renrakuAdmin.ts の ADMIN_UIDS[0] と同一）
+    function isRenrakuAdminUid() {
+      return request.auth != null && request.auth.uid == '6YGjqqBB0RejB5N01WUYupEogh53';
+    }
+
+    // Gmail: ローカル部のドット無視、googlemail.com → gmail.com（クライアントの normalizeEmailForRenrakuAdmin と同等）
+    function normalizedRenrakuAdminEmail(email) {
+      let t = email.lower().trim();
+      let parts = t.split('@');
+      return parts.size() != 2 ? t
+        : (
+            parts[1] == 'gmail.com' || parts[1] == 'googlemail.com'
+              ? parts[0].replace('\\.', '') + '@gmail.com'
+              : t
+          );
+    }
+
+    function isRenrakuAdminEmailToken() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email is string
+        && normalizedRenrakuAdminEmail(request.auth.token.email)
+          == normalizedRenrakuAdminEmail('akasirakuda@gmail.com');
+    }
+
+    function isAdmin() {
+      return isRenrakuAdminUid()
+        || (isSignedIn() && request.auth.token.email == 'akasirakuda@gmail.com')
+        || isRenrakuAdminEmailToken();
+    }
+
+    // 在籍カウント（usePresence: system/viewers/active/{uid}）
+    match /system/viewers/active/{uid} {
+      allow read, write: if true;
+    }
+
+    // 公開メッセージ（誰でも読む／作成は一般ユーザーも可 ※ isAdmin 不要）
+    match /renraku_public/{docId} {
+      allow read: if true;
+      // create: 認証済みかつ出禁でなければ可（管理者であることは不要）
+      allow create: if isSignedIn()
+        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid));
+      // update/delete: モデレーションは管理者のみ
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 30 日経過かつ非ピン留めの投稿は、ログイン済みユーザーによる掲示板オープン時のクリーンアップで削除可
+    function publicMessageExpired() {
+      return resource.data.createdAt < request.time - duration.value(30, 'd');
+    }
+
+    function publicMessagePinned() {
+      return resource.data.pinned == true;
+    }
+
+    function stalePublicMessageForReactionDelete(postId) {
+      return get(/databases/$(database)/documents/public_messages/$(postId)).data.createdAt
+        < request.time - duration.value(30, 'd')
+        && get(/databases/$(database)/documents/public_messages/$(postId)).data.pinned != true;
+    }
+
+    // コミュニティ掲示板（public_messages）
+    // 一覧・単体取得は誰でも
+    match /public_messages/{postId} {
+      allow get, list: if true;
+      // create: ログイン済み（匿名可）・出禁でなければ可・fromUserUid は本人 UID（管理者であることは不要）
+      allow create: if isSignedIn()
+        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+        && request.resource.data.fromUserUid == request.auth.uid;
+      // ピン留めは管理者のみ（既存 UI）
+      allow update: if isAdmin();
+      // 削除は管理者、本人（自分の投稿のみ・ピン留め以外）、または 30 日超え・非ピンの整理バッチ（ログイン済み・非ブロック）
+      allow delete: if isAdmin()
+        || (isSignedIn()
+          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && request.auth.uid == resource.data.fromUserUid
+          && !publicMessagePinned())
+        || (isSignedIn()
+          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && publicMessageExpired()
+          && !publicMessagePinned());
+
+      match /reactions/{uid} {
+        allow read: if true;
+        allow create, update: if isSignedIn()
+          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['emoji'])
+          && request.resource.data.emoji is string
+          && request.resource.data.emoji.size() <= 32;
+        allow delete: if isSignedIn()
+          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && (
+            request.auth.uid == uid
+            || stalePublicMessageForReactionDelete(postId)
+          );
+      }
+    }
+
+    // 在席情報（一覧は誰でも読める／更新は本人のみ）
+    match /renraku_presence/{uid} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ブロック状態（本人は自分の doc を読める／管理者は全件 read/write 可）
+    match /blockedUsers/{uid} {
+      allow read: if (isSignedIn() && request.auth.uid == uid) || isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 非公開メッセージ（ユーザーは作成のみ／閲覧・更新は管理者）
+    match /renraku_private/{docId} {
+      // read: 管理者、または投稿者本人（自分の伝言を表示するため）
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.fromUserUid == request.auth.uid);
+      // create: 認証済み・出禁でなければ可・fromUserUid は本人 UID（管理者であることは不要）
+      allow create: if isSignedIn()
+        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+        && request.resource.data.fromUserUid == request.auth.uid;
+      allow update: if isAdmin();
+      // delete: 本人は自分の伝言を削除できる（ゲスト側のゴミ箱ボタン用）
+      allow delete: if isAdmin()
+        || (isSignedIn() && resource.data.fromUserUid == request.auth.uid);
+    }
+
+    // 百人一首公開募集（誰でも読める／書き込みはログイン済みかつ host が本人のみ）
+    match /hundred_public/{docId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.hostUid == request.auth.uid;
+      allow update, delete: if request.auth != null
+        && resource.data.hostUid == request.auth.uid;
+    }
+
+    // みんなであそぶ用ルーム状態（開始状態を共有する）
+    match /hundred_rooms/{roomId} {
+      allow read: if true;
+      // ルーム作成はログイン済みなら許可（確実に作成できるようにする）
+      // hostUid の整合性はアプリ側で必ず request.auth.uid を書く前提
+      allow create: if isSignedIn();
+      // 更新: ログイン済みユーザー全員（ホストの開始・参加者の playerCount / foundWords 同期のため）
+      // サブコレーション players は下で本人のみに制限
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.hostUid;
+
+      // 参加者（自分の uid doc だけ書ける）
+      match /players/{uid} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+      }
+
+      // 問題一覧（番号・正誤・履歴）。誰でも閲覧／書き込みはログイン済み（ホスト処理と将来の同期用）
+      match /problems/{problemId} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn();
+      }
+
+      // 待機ロビーのチャット（短文）
+      // - read: 誰でも（待機画面で表示するため）
+      // - create: 認証済みかつ出禁でなければ可
+      // - update/delete: モデレーションは管理者のみ
+      match /lobby_messages/{messageId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && request.resource.data.uid == request.auth.uid;
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // syncRooms（同期用：みんなであそぶ／同期盤面）
+    match /syncRooms/{roomId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn();
+    }
+
+    // users/{uid}/logs（本人のログ）
+    match /users/{uid}/logs/{logId} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // 端末間同期プロフィール（useAppShell: rk_users/{uid}）
+    match /rk_users/{uid} {
+      allow read, create, update: if isSignedIn()
+        && request.auth.uid == uid
+        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid));
+      allow delete: if false;
+    }
+
+    // マルチプレイ rooms（ことば探し同期）
+    match /rooms/{roomId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn();
+
+      match /players/{uid} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+      }
+
+      match /board/{docId} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn();
+      }
+
+      match /progress/{docId} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn();
+      }
+    }
+
+    // その他すべて拒否
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,79 @@
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.status {
+  font-size: 12px;
+  color: color-mix(in oklab, var(--foreground) 60%, transparent);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.cell {
+  height: 56px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 20%, transparent);
+  background: transparent;
+  color: inherit;
+  font-size: 18px;
+  font-weight: 800;
+  touch-action: manipulation;
+}
+
+.on {
+  background: color-mix(in oklab, var(--foreground) 14%, transparent);
+  border-color: color-mix(in oklab, var(--foreground) 40%, transparent);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 520px;
+}
+
+.panel input {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+  padding: 0 12px;
+  background: transparent;
+  color: inherit;
+}
+
+.panel button {
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 35%, transparent);
+  background: var(--foreground);
+  color: var(--background);
+  font-weight: 800;
+}
+
+@media (max-width: 420px) {
+  .grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+  .cell {
+    height: 52px;
+  }
+}
+
