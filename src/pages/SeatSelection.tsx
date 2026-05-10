@@ -10,6 +10,8 @@ import { btnGhost } from '../ui/policy';
 import type { UserAccount } from '../types';
 import { auth } from '../firebase';
 import { isRenrakuAdmin } from '../lib/renrakuAdmin';
+import { sanjuuTopUrlWithRakudaProfile } from '../lib/sanjuuWebOrigin';
+import { vibrate } from '../lib/utils';
 
 interface SeatSelectionProps {
   onSelectWindow: () => void;
@@ -460,13 +462,12 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">ことば探しであそぶ</span>
                 </button>
 
-                {/* 2. みんなであそぶ（掲示板） */}
+                {/* 2. 掲示板（らくだ内・/hundred と同じ遷移） */}
                 <button
                   type="button"
-                  className={`${hubBtn} bg-[#e7d8c4] border-[#5a3d28] text-[#3b2a18] shadow-md`}
+                  className={`${hubBtn} bg-gradient-to-r from-violet-200 to-indigo-200 border-indigo-700/40 text-indigo-950 shadow-md`}
                   onClick={() => {
-                    // Allow entering the hub even before profile setup.
-                    // Some environments fail to persist local state; blocking entry makes it look "broken".
+                    vibrate(10);
                     if (!hasProfile) {
                       window.dispatchEvent(
                         new CustomEvent('SHOW_TOAST', {
@@ -477,22 +478,33 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                     void onOpenHundredHub();
                   }}
                 >
-                  {hasActiveRecruitments ? (
-                    <span className="pointer-events-none absolute -top-1.5 left-2 z-[90] bg-rose-200 text-[9px] font-bold px-1.5 py-0.5 rounded-lg border border-rose-300 shadow-sm">
-                      募集
-                    </span>
-                  ) : null}
-                  {renrakuchoHasUnread ? (
-                    <span className="pointer-events-none absolute -top-2 -right-2 z-[100] min-w-[2.75rem] text-center bg-red-600 text-white text-xs font-black px-2 py-1 rounded-lg border-2 border-red-900 shadow-md">
-                      未読
-                    </span>
-                  ) : null}
-                  <span className="text-lg leading-none">📝</span>
-                  <span className="font-medium text-center leading-tight">みんなであそぶ（掲示板）</span>
+                  <span className="text-lg leading-none">📋</span>
+                  <span className="font-medium text-center leading-tight flex flex-col gap-0.5">
+                    <span>掲示板</span>
+                    {hasActiveRecruitments ? (
+                      <span className="text-[10px] font-black text-indigo-800/90">募集中あり</span>
+                    ) : renrakuchoHasUnread ? (
+                      <span className="text-[10px] font-black text-indigo-800/90">未読あり</span>
+                    ) : null}
+                  </span>
                 </button>
 
-                {/* 3. みんなの願い */}
-                {/* 4. しゅっせき簿 */}
+                {/* 3. ３０用の募集掲示板（SANJUU トップ・既存 URL パラメータと同じ） */}
+                <button
+                  type="button"
+                  className={`${hubBtn} bg-gradient-to-r from-sky-200 to-cyan-200 border-sky-700/45 text-sky-950 shadow-md`}
+                  onClick={() => {
+                    vibrate(10);
+                    const url = sanjuuTopUrlWithRakudaProfile({ emoji: userEmoji, nickname });
+                    window.location.assign(url);
+                  }}
+                >
+                  <span className="text-lg leading-none">３０</span>
+                  <span className="font-medium text-center leading-tight">３０用の募集掲示板</span>
+                </button>
+
+                {/* 4. みんなの願い */}
+                {/* 5. しゅっせき簿 */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-emerald-300 to-green-300 border-emerald-600/55 text-emerald-950 shadow-md`}
@@ -502,7 +514,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">しゅっせき簿</span>
                 </button>
 
-                {/* 5. しずかの間 */}
+                {/* 6. しずかの間 */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-slate-900 to-blue-950 border-sky-500/50 text-sky-50 shadow-md`}
@@ -512,7 +524,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">しずかの間</span>
                 </button>
 
-                {/* 6. 広告の消去 */}
+                {/* 7. 広告の消去 */}
                 <button
                   type="button"
                   disabled
