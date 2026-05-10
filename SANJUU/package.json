@@ -1,21 +1,20 @@
 {
-  "name": "sanjuu",
+  "name": "rakuda-pro-root",
+  "version": "1.0.0",
   "private": true,
   "workspaces": [
     "web",
     "ws"
   ],
   "scripts": {
-    "dev:web": "npm -w web run dev",
-    "dev:ws": "npm -w ws run dev",
-    "dev": "concurrently --shell cmd.exe -n web,ws -c blue,green \"npm:dev:web\" \"npm:dev:ws\"",
-    "build": "npm -w web run build && npm -w ws run build",
-    "start": "npm -w ws run start & npm -w web run start",
-    "lint": "npm -w web run lint && npm -w ws run lint",
-    "loadtest": "npm -w ws run loadtest"
+    "dev:web": "npm --prefix web run dev",
+    "dev:ws": "npm --prefix ws run dev",
+    "dev": "node scripts/dev.mjs"
+  },
+  "dependencies": {
+    "react-is": "^18.3.1"
   },
   "devDependencies": {
-    "concurrently": "^9.2.0"
+    "http-proxy": "^1.18.1"
   }
 }
-
