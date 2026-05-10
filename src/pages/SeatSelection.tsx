@@ -10,7 +10,11 @@ import { btnGhost } from '../ui/policy';
 import type { UserAccount } from '../types';
 import { auth } from '../firebase';
 import { isRenrakuAdmin } from '../lib/renrakuAdmin';
-import { sanjuuTopUrlWithRakudaProfile, sanjuuWebOrigin } from '../lib/sanjuuWebOrigin';
+import {
+  sanjuuBulletinBoardUrl,
+  sanjuuTopUrlWithRakudaProfile,
+  sanjuuWebOrigin,
+} from '../lib/sanjuuWebOrigin';
 import { vibrate } from '../lib/utils';
 
 interface SeatSelectionProps {
@@ -43,7 +47,7 @@ const hubBtn =
 
 const SeatSelection: React.FC<SeatSelectionProps> = ({
   onSelectWindow,
-  onOpenHundredHub,
+  onOpenHundredHub: _onOpenHundredHubFromParent,
   onOpenRenrakuchoAdmin,
   onSelectQuietRoom,
   onOpenStampCard,
@@ -476,7 +480,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium text-center leading-tight">３０（ＳＡＮＪＵＵ）であそぶ</span>
                 </button>
 
-                {/* 3. 掲示板（らくだ内・/hundred と同じ遷移） */}
+                {/* 3. 掲示板 → 三十 `/sanjuu/bulletin`（開発例: http://localhost:3200/sanjuu/bulletin） */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-violet-200 to-indigo-200 border-indigo-700/40 text-indigo-950 shadow-md`}
@@ -489,7 +493,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                         })
                       );
                     }
-                    void onOpenHundredHub();
+                    window.location.assign(sanjuuBulletinBoardUrl());
                   }}
                 >
                   <span className="text-lg leading-none">📋</span>

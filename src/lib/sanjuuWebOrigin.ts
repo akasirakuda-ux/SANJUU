@@ -4,6 +4,11 @@ export function sanjuuWebOrigin(): string {
   return v || 'http://localhost:3200';
 }
 
+/** 三十「全体掲示板」（らくだトップの「掲示板」ボタン）。本番・開発とも `VITE_SANJUU_WEB_ORIGIN` をベースにする。 */
+export function sanjuuBulletinBoardUrl(): string {
+  return `${sanjuuWebOrigin().replace(/\/+$/, '')}/sanjuu/bulletin`;
+}
+
 /** 三十トップ（`/`) の絶対 URL。空でないときだけ `rkEmoji` / `rkNick` を付与（三十側仕様に合わせる） */
 export function sanjuuTopUrlWithRakudaProfile(opts: { emoji?: string; nickname?: string }): string {
   const base = `${sanjuuWebOrigin().replace(/\/+$/, '')}/`;
