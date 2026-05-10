@@ -10,7 +10,7 @@ import { btnGhost } from '../ui/policy';
 import type { UserAccount } from '../types';
 import { auth } from '../firebase';
 import { isRenrakuAdmin } from '../lib/renrakuAdmin';
-import { sanjuuTopUrlWithRakudaProfile } from '../lib/sanjuuWebOrigin';
+import { sanjuuTopUrlWithRakudaProfile, sanjuuWebOrigin } from '../lib/sanjuuWebOrigin';
 import { vibrate } from '../lib/utils';
 
 interface SeatSelectionProps {
@@ -462,7 +462,21 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">ことば探しであそぶ</span>
                 </button>
 
-                {/* 2. 掲示板（らくだ内・/hundred と同じ遷移） */}
+                {/* 2. ３０（SANJUU）トップへ → sanjuuWebOrigin()＝VITE_SANJUU_WEB_ORIGIN（開発は .env.development） */}
+                <button
+                  type="button"
+                  className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
+                  onClick={() => {
+                    vibrate(10);
+                    const url = `${sanjuuWebOrigin().replace(/\/+$/, '')}/`;
+                    window.location.assign(url);
+                  }}
+                >
+                  <span className="text-lg leading-none">３０</span>
+                  <span className="font-medium text-center leading-tight">３０（ＳＡＮＪＵＵ）であそぶ</span>
+                </button>
+
+                {/* 3. 掲示板（らくだ内・/hundred と同じ遷移） */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-violet-200 to-indigo-200 border-indigo-700/40 text-indigo-950 shadow-md`}
@@ -489,7 +503,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   </span>
                 </button>
 
-                {/* 3. ３０用の募集掲示板（SANJUU トップ・既存 URL パラメータと同じ） */}
+                {/* 4. ３０用の募集掲示板（SANJUU トップ・既存 URL パラメータと同じ） */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-sky-200 to-cyan-200 border-sky-700/45 text-sky-950 shadow-md`}
@@ -503,8 +517,8 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium text-center leading-tight">３０用の募集掲示板</span>
                 </button>
 
-                {/* 4. みんなの願い */}
-                {/* 5. しゅっせき簿 */}
+                {/* 5. みんなの願い */}
+                {/* 6. しゅっせき簿 */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-emerald-300 to-green-300 border-emerald-600/55 text-emerald-950 shadow-md`}
@@ -514,7 +528,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">しゅっせき簿</span>
                 </button>
 
-                {/* 6. しずかの間 */}
+                {/* 7. しずかの間 */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-gradient-to-r from-slate-900 to-blue-950 border-sky-500/50 text-sky-50 shadow-md`}
@@ -524,7 +538,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">しずかの間</span>
                 </button>
 
-                {/* 7. 広告の消去 */}
+                {/* 8. 広告の消去 */}
                 <button
                   type="button"
                   disabled
