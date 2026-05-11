@@ -10,7 +10,7 @@ import RakudaFloatingBackdrop from './RakudaFloatingBackdrop';
 import { btnGhost, btnPrimary, cardClass } from '../ui/policy';
 import { pageTopHeadingClass } from '../ui/typography';
 import QRCode from 'qrcode';
-import { getDoc, doc } from 'firebase/firestore';
+import { getDoc, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { applyHostCancelledHundredGeneration } from '../lib/hundredRecruitCancel';
 
@@ -317,6 +317,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
     setSubmitStatus('idle');
     setSubmitError('');
+    // Ensure the canvas is redrawn immediately on board change.
+    // (In compactMode we throttle draws; without this, old ribbons can linger visually.)
+    forceDrawRef.current = true;
+    lastActivityAtMsRef.current = Date.now();
+    lastDrawAtMsRef.current = 0;
   }, [
     // A change in these typically means a new puzzle/round
     gameState.actualSeed,
@@ -984,6 +989,13 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return n;
   }, [gameState.placedWords, countByOccurrence]);
 
+  // Safety: never show "8/7" etc even if data gets temporarily inconsistent.
+  // Also use this for clear/progress so gameplay doesn't break.
+  const safeFoundCount = React.useMemo(() => {
+    if (totalCount <= 0) return Math.max(0, foundCount);
+    return Math.min(foundCount, totalCount);
+  }, [foundCount, totalCount]);
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (isFinished || startCountdown > 0) return;
     forceDrawRef.current = true;
@@ -1090,7 +1102,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
           }
         }
 
-        const isLastWord = foundCount === totalCount - 1;
+        const isLastWord = safeFoundCount === totalCount - 1;
         // 「すべてのこたえ」表示中はポイント獲得なし
         const pointsEarned = isLastWord && !showAnswers ? getClearPoints(gameState.difficulty) : 0;
 
@@ -1143,7 +1155,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
               return;
             }
           }
-          const isLastWord = foundCount === totalCount - 1;
+          const isLastWord = safeFoundCount === totalCount - 1;
           const pointsEarned = isLastWord && !showAnswers ? getClearPoints(gameState.difficulty) : 0;
           if (pointsEarned > 0) setSessionPoints((p) => p + pointsEarned);
           setLastGainedPoints(pointsEarned);
@@ -1155,7 +1167,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
     selectionRef.current = { start: null, end: null };
     setActiveSelection({ start: null, end: null });
-  }, [gameState, layout, streakCount, lastGainedPoints, onUpdateFound, foundCount, totalCount, showAnswers]);
+  }, [gameState, layout, streakCount, lastGainedPoints, onUpdateFound, safeFoundCount, totalCount, showAnswers]);
 
   useEffect(() => {
     window.addEventListener('pointermove', handlePointerMove);
@@ -1180,25 +1192,25 @@ const GameScreen: React.FC<GameScreenProps> = ({
   );
 
   useEffect(() => {
-    if (totalCount > 1 && foundCount === totalCount - 1 && !isFinished) {
+    if (totalCount > 1 && safeFoundCount === totalCount - 1 && !isFinished) {
       setShowLastOneBonus(true);
       audioService.playBonusSound();
       const timer = setTimeout(() => setShowLastOneBonus(false), FLY_BANNER_DURATION_SEC * 1000);
       return () => clearTimeout(timer);
     }
-  }, [foundCount, totalCount, isFinished]);
+  }, [safeFoundCount, totalCount, isFinished]);
 
   /** 全問クリア直後：ことば探し・みんなであそぶ共通。ラストワンと同系の飛び出し演出（非表示はアニメ終了時） */
   useEffect(() => {
-    if (totalCount <= 0 || foundCount !== totalCount || isFinished) return;
+    if (totalCount <= 0 || safeFoundCount !== totalCount || isFinished) return;
     setShowLastOneBonus(false);
     setShowClearFlyBonus(true);
     audioService.playBonusSound();
     return () => setShowClearFlyBonus(false);
-  }, [foundCount, totalCount, isFinished]);
+  }, [safeFoundCount, totalCount, isFinished]);
 
   useEffect(() => {
-    if (totalCount <= 0 || foundCount < totalCount || isFinished) return;
+    if (totalCount <= 0 || safeFoundCount < totalCount || isFinished) return;
 
     const tid = window.setTimeout(() => {
       const gs = gameStateRef.current;
@@ -1228,7 +1240,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
         details: { 
           category: String(gs.category?.category || "unknown"), 
           difficulty: gs.difficulty, 
-          foundCount: foundCount, 
+          foundCount: safeFoundCount, 
           totalCount: totalCount, 
           duration: durStr, 
           points: sessionPointsRef.current 
@@ -1240,7 +1252,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return () => window.clearTimeout(tid);
     // 最後の正解から、クリア横スクロール終了直後にクリアモーダル（所要時間はラストワンと同じ px/s に合わせた clearFlyModalDelayMs）。deps は最小にする。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- コールバックは ref / 安定参照で遅延内取得
-  }, [foundCount, totalCount, isFinished]);
+  }, [safeFoundCount, totalCount, isFinished]);
 
   const handleHint = () => {
     if (totalPoints < HINT_COST) {
@@ -1325,7 +1337,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     });
   }, [gameState, proCode, language, showToast, vibrate]);
 
-  const progress = Math.min((foundCount / (totalCount || 1)) * 100, 100);
+  const progress = Math.min((safeFoundCount / (totalCount || 1)) * 100, 100);
 
   if (!gameState.grid || gameState.grid.length === 0) {
     return (
@@ -1442,6 +1454,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     roomId,
                     hundredPublicDocId: publicRecruitId,
                   });
+                  // Reset ribbons too, so re-entering the same room never resurrects old bands.
+                  await setDoc(
+                    doc(db, 'hundred_rooms', roomId),
+                    { foundWords: [], updatedAt: serverTimestamp() },
+                    { merge: true }
+                  ).catch(() => {});
                 } catch (e) {
                   console.warn('[GameScreen] interrupt close recruitment failed', e);
                 }
@@ -1826,7 +1844,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       `なまえ: ${nickname || userId}\n` +
                       `カテゴリー: ${getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana)}\n` +
                       `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
-                      `こたえの数: ${foundCount}/${totalCount}個\n` +
+                      `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
                       `じかん: ${clearTime}\n` +
                       `ポイント: 🐫${sessionPoints}\n` +
                       `見つけた言葉:\n${foundWordsList}${contributorText}\n\n` +
@@ -1879,7 +1897,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       `なまえ: ${nickname || userId}\n` +
                       `カテゴリー: ${getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana)}\n` +
                       `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
-                      `こたえの数: ${foundCount}/${totalCount}個\n` +
+                      `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
                       `じかん: ${clearTime}\n` +
                       `ポイント: 🐫${sessionPoints}\n` +
                       (displaySeed ? `合言葉: ${displaySeed}\n` : '') +
@@ -1989,7 +2007,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
               </div>
               <div className={`flex items-center justify-center gap-2 ${hundredCoop ? 'mt-0.5' : 'mt-1'}`}>
                 <span className={`${hundredCoop ? 'text-[14px] md:text-[18px]' : 'text-[16px] md:text-[21px]'} font-black text-slate-700 tabular-nums leading-none text-center whitespace-nowrap`}>
-                  {gameState.difficulty}×{gameState.difficulty} {foundCount}/{totalCount}
+                  {gameState.difficulty}×{gameState.difficulty} {safeFoundCount}/{totalCount}
                 </span>
                 {gameState.gameMode === 'search' && gameState.category?.category === 'search' && (
                   <div className="flex flex-col items-center ml-2 min-w-[100px] md:min-w-[150px]">
@@ -2198,7 +2216,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                         とじる
                       </button>
                       <div className="text-[10px] font-medium text-slate-700 tabular-nums bg-white px-2 py-1.5 rounded-xl border border-slate-200 font-black">
-                        {foundCount}/{totalCount}
+                        {safeFoundCount}/{totalCount}
                       </div>
                     </div>
                     <div className="flex justify-center gap-4 text-[9px] font-black text-slate-600 tracking-tight">

@@ -11,27 +11,81 @@
   max-width: 720px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .title {
-  font-size: 34px;
-  letter-spacing: -1px;
-  font-weight: 700;
+  font-size: clamp(28px, 6vw, 40px);
+  letter-spacing: -0.03em;
+  font-weight: 800;
 }
 
 .sub {
-  color: color-mix(in oklab, var(--foreground) 55%, transparent);
-  font-size: 14px;
+  color: color-mix(in oklab, var(--foreground) 62%, transparent);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.h2 {
+  font-size: 1.05rem;
+  font-weight: 800;
+  margin: 0;
 }
 
 .card {
-  border: 1px solid color-mix(in oklab, var(--foreground) 20%, transparent);
-  border-radius: 12px;
-  padding: 16px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);
+  border-radius: 14px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  background: color-mix(in oklab, var(--foreground) 3%, transparent);
+}
+
+.tryFirst {
+  border-width: 2px;
+  border-color: color-mix(in oklab, var(--foreground) 42%, transparent);
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+.lead {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.afterStart {
+  margin: 0;
+  font-size: 13px;
+  color: color-mix(in oklab, var(--foreground) 58%, transparent);
+  line-height: 1.5;
+}
+
+.bigStart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  border-radius: 12px;
+  border: none;
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 17px;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0 20px;
+  text-align: center;
+}
+
+.bigStart:active {
+  opacity: 0.92;
 }
 
 .form {
@@ -43,52 +97,50 @@
 .label {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .label input {
-  height: 40px;
+  height: 44px;
   border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
   padding: 0 12px;
   background: transparent;
   color: inherit;
+  font-size: 15px;
 }
 
-.row {
+.links {
+  margin: 0;
+  padding-left: 1.25rem;
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  flex-wrap: wrap;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.links a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .primary {
-  height: 40px;
+  height: 44px;
   border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--foreground) 35%, transparent);
   background: var(--foreground);
   color: var(--background);
-  font-weight: 700;
+  font-weight: 800;
+  font-size: 14px;
   cursor: pointer;
 }
 
-.secondary {
-  height: 40px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
-  background: transparent;
-  padding: 0 12px;
-  display: inline-flex;
-  align-items: center;
-}
-
 .small {
-  font-size: 12px;
-  color: color-mix(in oklab, var(--foreground) 60%, transparent);
-}
-
-@media (max-width: 600px) {
-  .title {
-    font-size: 28px;
-  }
+  font-size: 13px;
+  color: color-mix(in oklab, var(--foreground) 62%, transparent);
+  line-height: 1.5;
+  margin: 0;
 }

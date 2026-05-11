@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SanjuuBrandHeading from '../../components/SanjuuBrandHeading';
 import styles from './page.module.css';
 import type { PlayDiff, PlayFull } from '@/lib/playBinary';
+import { browserSanjuuHttpUrl, browserSanjuuPlayWsUrl } from '@/lib/sanjuuUrls';
 import { PlayWsClient } from '@/lib/playWsClient';
+import { useStableConnectedUi } from '@/lib/useStableConnectedUi';
 
 const CELLS = 900;
-const HTTP_BASE = () => process.env.NEXT_PUBLIC_HTTP_URL ?? 'http://localhost:8080';
+const HTTP_BASE = () => browserSanjuuHttpUrl();
 
 /** 数字のみは10進 roomId、英字を含む場合は base36（従来の roomCode） */
 function parsePlayRoomId(s: string): number | null {
@@ -103,6 +105,7 @@ function Cell({ idx, store, disabled }: { idx: number; store: BoardStore; disabl
 
 export default function PlayPage() {
   const [connected, setConnected] = useState(false);
+  const steadyConnectedUi = useStableConnectedUi(connected);
   const [status, setStatus] = useState<{ started: boolean; revealed: boolean; clientsCount: number }>({
     started: false,
     revealed: false,
@@ -126,12 +129,12 @@ export default function PlayPage() {
 
   const clientRef = useRef<PlayWsClient | null>(null);
   const autoConnectDone = useRef(false);
+  const pendingAfterCreateRef = useRef<{ rid: number; host: string } | null>(null);
 
-  const wsUrl = useMemo(() => {
-    const env = process.env.NEXT_PUBLIC_PLAY_WS_URL;
-    if (env) return env;
-    const base = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8080/ws';
-    return base.replace(/\/ws$/, '/playws');
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    setWsUrl(browserSanjuuPlayWsUrl(process.env.NEXT_PUBLIC_PLAY_WS_URL, process.env.NEXT_PUBLIC_WS_URL));
   }, []);
 
   // lightweight "world shake" based on healthz normalRTT p99
@@ -187,6 +190,7 @@ export default function PlayPage() {
 
   const startClientWithRoom = useCallback(
     (rid: number, hk: string) => {
+      if (!wsUrl) return;
       clientRef.current?.stop();
       setHasBoard(false);
       setError(null);
@@ -204,6 +208,13 @@ export default function PlayPage() {
   );
 
   useEffect(() => {
+    if (!wsUrl) return;
+    const pend = pendingAfterCreateRef.current;
+    if (pend) {
+      pendingAfterCreateRef.current = null;
+      queueMicrotask(() => startClientWithRoom(pend.rid, pend.host));
+      return;
+    }
     const u = new URL(window.location.href);
     const r = u.searchParams.get('room') ?? '';
     const h = u.searchParams.get('host') ?? '';
@@ -213,7 +224,7 @@ export default function PlayPage() {
     if (!rid || autoConnectDone.current) return;
     autoConnectDone.current = true;
     queueMicrotask(() => startClientWithRoom(rid, h));
-  }, [startClientWithRoom]);
+  }, [wsUrl, startClientWithRoom]);
 
   const validRoomId = parsePlayRoomId(roomCode);
 
@@ -251,7 +262,7 @@ export default function PlayPage() {
 
   const connect = () => {
     const rid = parsePlayRoomId(roomCode);
-    if (rid == null) return;
+    if (rid == null || !wsUrl) return;
     startClientWithRoom(rid, hostKey);
   };
 
@@ -274,7 +285,10 @@ export default function PlayPage() {
     setHasBoard(false);
     autoConnectDone.current = true;
     const rid = parsePlayRoomId(room);
-    if (rid != null) queueMicrotask(() => startClientWithRoom(rid, host));
+    if (rid != null) {
+      if (wsUrl) queueMicrotask(() => startClientWithRoom(rid, host));
+      else pendingAfterCreateRef.current = { rid, host };
+    }
   };
 
   const isHost = hostKey.trim().length > 0;
@@ -291,7 +305,7 @@ export default function PlayPage() {
             /play room: <code>{roomCode || '(none)'}</code>
           </div>
           <div className={styles.status}>
-            {connected ? '接続中' : '未接続'} / players: {status.clientsCount} / started: {status.started ? '1' : '0'} / revealed:{' '}
+            {steadyConnectedUi ? '接続中' : '未接続'} / players: {status.clientsCount} / started: {status.started ? '1' : '0'} / revealed:{' '}
             {status.revealed ? '1' : '0'}
             {error != null ? ` / error:${error}` : ''}
           </div>

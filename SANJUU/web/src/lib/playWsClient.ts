@@ -22,6 +22,7 @@ export class PlayWsClient {
   private handlers: Handlers;
   private backoffMs = 250;
   private closed = false;
+  private session = 0;
   private hostKey?: string;
 
   constructor(opts: { url: string; roomId: number; hostKey?: string; handlers: Handlers }) {
@@ -33,11 +34,15 @@ export class PlayWsClient {
 
   start() {
     this.closed = false;
-    this.connect();
+    this.session++;
+    this.backoffMs = 250;
+    const s = this.session;
+    this.openSocket(s);
   }
 
   stop() {
     this.closed = true;
+    this.session++;
     try {
       this.ws?.close();
     } catch {}
@@ -67,14 +72,14 @@ export class PlayWsClient {
     this.sendBytes(encodePlaySetWord(this.hostKey, word));
   }
 
-  private connect() {
-    if (this.closed) return;
+  private openSocket(s: number) {
+    if (this.closed || s !== this.session) return;
     const ws = new WebSocket(this.url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
-    this.handlers.onStatus?.({ connected: false });
 
     ws.onopen = () => {
+      if (this.closed || s !== this.session) return;
       this.backoffMs = 250;
       this.handlers.onStatus?.({ connected: true });
       this.sendBytes(encodePlayJoin(this.roomId));
@@ -86,11 +91,12 @@ export class PlayWsClient {
     };
 
     ws.onclose = () => {
-      this.handlers.onStatus?.({ connected: false });
+      if (s !== this.session) return;
       if (this.closed) return;
+      this.handlers.onStatus?.({ connected: false });
       const wait = this.backoffMs;
       this.backoffMs = Math.min(5000, Math.floor(this.backoffMs * 1.6));
-      window.setTimeout(() => this.connect(), wait);
+      window.setTimeout(() => this.openSocket(s), wait);
     };
   }
 

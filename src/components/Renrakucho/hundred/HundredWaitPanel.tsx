@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { btnGhost, btnPrimary } from '../../../ui/policy';
 import type { HundredPublicRecruit } from '../types';
 import { auth, db } from '../../../firebase';
+import { tripFirestoreCircuit } from '../../../lib/firestoreCircuit';
 import { onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import {
   addDoc,
   collection,
   doc,
-  getDoc,
   increment,
   limit,
   onSnapshot,
@@ -104,11 +104,16 @@ const HundredWaitPanel: React.FC<{
   const rejectGenerationRef = useRef<((reason?: unknown) => void) | null>(null);
   /** 募集締切による自動開始は1回だけ（room 切り替えでリセット） */
   const autoStartByDeadlineRef = useRef(false);
+  /** room doc 欠損時の backfill は1回だけ（無限ループ/無駄な書き込み防止） */
+  const didBackfillRoomDocRef = useRef(false);
+  // NOTE: Start button has `startInFlightRef` already.
+  // Keeping a persistent "did reset" flag can break reset on the next round.
   const handleStartRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     setRoomRecruitDeadlineAt(undefined);
     autoStartByDeadlineRef.current = false;
+    didBackfillRoomDocRef.current = false;
   }, [roomId]);
 
   useEffect(() => {
@@ -164,23 +169,6 @@ const HundredWaitPanel: React.FC<{
         return;
       }
       const playerRef = doc(db, 'hundred_rooms', roomId, 'players', uid);
-      const existed = await getDoc(playerRef).catch(() => null);
-      const roomSnap = await getDoc(doc(db, 'hundred_rooms', roomId)).catch(() => null);
-      if (!roomSnap?.exists()) {
-        setJoinError('参加に失敗しました（部屋情報の取得に失敗）。時間をおいて再度お試しください。');
-        return;
-      }
-      const rm = roomSnap.data() as { playerCount?: number; status?: string } | undefined;
-      const pc = typeof rm?.playerCount === 'number' ? rm.playerCount : 0;
-      const st = typeof rm?.status === 'string' ? rm.status : 'recruiting';
-      if (st === 'finished' || st === 'cancelled') {
-        setJoinError('この募集は終了しました。');
-        return;
-      }
-      if (!existed?.exists() && pc >= 100) {
-        setJoinError('参加人数が上限に達しました。別の募集をお試しください。');
-        return;
-      }
 
       const didSet = await setDoc(
         playerRef,
@@ -201,11 +189,8 @@ const HundredWaitPanel: React.FC<{
         });
       if (!didSet) return;
 
-      if (!existed?.exists() && pc < 100) {
-        await updateDoc(doc(db, 'hundred_rooms', roomId), { playerCount: increment(1) }).catch((e: any) => {
-          console.warn('[HundredWaitPanel] join playerCount update failed', e);
-        });
-      }
+      // NOTE: Avoid extra reads/writes here to prevent Firestore quota errors (429).
+      // playerCount is "nice to have" but not required for core flow; room snapshot drives status.
       setJoinOk(true);
     })();
 
@@ -221,6 +206,8 @@ const HundredWaitPanel: React.FC<{
 
   useEffect(() => {
     if (!roomRef) return;
+    // 入室できるまで room doc を購読しない（429対策）
+    if (!joinOk) return;
     const unsub = onSnapshot(
       roomRef,
       async (snap) => {
@@ -229,8 +216,14 @@ const HundredWaitPanel: React.FC<{
           setProblemsGenerating(false);
           setHostUid('');
           setStatus('recruiting');
-          // Backfill room doc if host created old recruit without room doc
-          if (auth.currentUser?.uid && roomId) {
+          // Backfill room doc (host only) — but do it once to avoid write loops.
+          if (
+            !didBackfillRoomDocRef.current &&
+            isHost &&
+            auth.currentUser?.uid &&
+            roomId
+          ) {
+            didBackfillRoomDocRef.current = true;
             await setDoc(
               doc(db, 'hundred_rooms', roomId),
               {
@@ -263,11 +256,20 @@ const HundredWaitPanel: React.FC<{
       },
       (err) => {
         console.warn('[HundredWaitPanel] hundred_rooms snapshot error', err);
+        tripFirestoreCircuit(db as any, err);
         setProblemsGenerating(false);
       }
     );
     return () => unsub();
-  }, [roomRef, roomId, onStartHundred, selectedHundred.boardSize, selectedHundred.targetWord]);
+  }, [
+    roomRef,
+    roomId,
+    onStartHundred,
+    selectedHundred.boardSize,
+    selectedHundred.targetWord,
+    joinOk,
+    isHost,
+  ]);
 
   // 参加者一覧（参加ボタン／入室と同じ players サブコレ）をリアルタイム表示
   useEffect(() => {
@@ -275,8 +277,9 @@ const HundredWaitPanel: React.FC<{
     if (!roomId) return;
     if (status !== 'recruiting') return;
     const col = collection(db, 'hundred_rooms', roomId, 'players');
+    const q = query(col, limit(30));
     const unsub = onSnapshot(
-      col,
+      q,
       (snap) => {
         const next: RoomPlayer[] = [];
         snap.forEach((d) => {
@@ -289,6 +292,7 @@ const HundredWaitPanel: React.FC<{
       },
       (err) => {
         console.warn('[HundredWaitPanel] players snapshot error', err);
+        tripFirestoreCircuit(db as any, err);
         setRoomPlayers([]);
       }
     );
@@ -332,6 +336,18 @@ const HundredWaitPanel: React.FC<{
     recruitRemainingSec <= 10 &&
     status === 'recruiting';
 
+  const autoResetProgressBeforeStart = useCallback(async () => {
+    if (!roomId) return;
+    if (!isHost) return;
+    try {
+      // 1) Reset room-wide ribbons
+      await setDoc(doc(db, 'hundred_rooms', roomId), { foundWords: [], updatedAt: serverTimestamp() }, { merge: true });
+    } catch (e) {
+      // Fail-open: start should still proceed even if reset hits transient errors.
+      console.warn('[HundredWaitPanel] autoResetProgressBeforeStart failed', e);
+    }
+  }, [roomId, isHost]);
+
   const handleStart = async () => {
     if (!roomId) return;
     if (!isHost) return;
@@ -363,6 +379,9 @@ const HundredWaitPanel: React.FC<{
         window.alert('ログインが必要です。');
         return;
       }
+
+      // 利用者操作なしで、開始前に必ず帯/カウントを0に戻す（前の残骸対策）
+      await autoResetProgressBeforeStart();
 
       // 探しもの（単語1つを大量配置）の盤面を生成し、hundred_rooms に保存して GameScreen へ遷移
       // `hundred_public` / HundredCreate と同じ number（正方形の一辺）。欠損時は作成画面の既定 50
@@ -624,6 +643,9 @@ const HundredWaitPanel: React.FC<{
   // Lobby chat: 直近メッセージ（邪魔にならない程度）を購読
   useEffect(() => {
     if (!roomId) return;
+    // 入室前/開始後は購読しない（無駄な読みを減らして 429 を避ける）
+    if (!joinOk) return;
+    if (status !== 'recruiting') return;
     const col = collection(db, 'hundred_rooms', roomId, 'lobby_messages');
     setLobbyChatError(null);
 
@@ -658,41 +680,35 @@ const HundredWaitPanel: React.FC<{
     // ただしルール/インデックス/古いデータ等で失敗した場合は createdAt へフォールバックする。
     // Keep a bit more history so "積み上がらない（すぐ消える）" を防ぐ。
     // 配信モードは邪魔にならないよう少なめのまま。
-    const lobbyLimit = streamMode ? 6 : 40;
-    const qA = query(col, orderBy('createdAtMs', 'desc'), limit(lobbyLimit));
-    const qB = query(col, orderBy('createdAt', 'desc'), limit(lobbyLimit));
-
-    let unsubB: (() => void) | null = null;
+    // Keep reads small to avoid quota issues.
+    // NOTE: 購読は 1 本に固定（fallback で購読が増えると 429 を悪化させやすい）
+    const lobbyLimit = streamMode ? 6 : 10;
+    // `createdAtMs` は古いデータで欠損しうるため、購読クエリは `createdAt` を基準にする
+    // （表示順は createdAtMs/createdAt からローカルで整形済み）
+    const qA = query(col, orderBy('createdAt', 'desc'), limit(lobbyLimit));
     const unsubA = onSnapshot(
       qA,
       (snap) => parseSnap(snap),
       (err) => {
         console.warn('[HundredWaitPanel] lobby_messages(createdAtMs) snapshot error', err);
-        setLobbyChatError('ロビーチャットの取得に失敗しました（通信/権限）。');
-        // fallback
-        unsubB = onSnapshot(
-          qB,
-          (snap) => {
-            setLobbyChatError(null);
-            parseSnap(snap);
-          },
-          (err2) => {
-            console.warn('[HundredWaitPanel] lobby_messages(createdAt) snapshot error', err2);
-            setLobbyChatError('ロビーチャットが利用できません（通信/権限）。');
-            setLobbyChat([]);
-          }
-        );
+        tripFirestoreCircuit(db as any, err);
+        const code = (err as any)?.code;
+        if (code === 'resource-exhausted') {
+          setLobbyChatError('ロビーチャットが混雑で停止中です（429）。少し待ってから再試行してください。');
+        } else if (code === 'permission-denied') {
+          setLobbyChatError('ロビーチャットが利用できません（権限）。');
+        } else {
+          setLobbyChatError('ロビーチャットの取得に失敗しました（通信）。');
+        }
+        setLobbyChat([]);
       }
     );
     return () => {
       try {
         unsubA();
       } catch {}
-      try {
-        unsubB?.();
-      } catch {}
     };
-  }, [roomId, streamMode]);
+  }, [roomId, streamMode, joinOk, status]);
 
   // 新着が来たら末尾（最新）へスクロール
   // limit 付きクエリだと length が変わらないまま内容だけ差し替わることがあるため、
@@ -714,8 +730,21 @@ const HundredWaitPanel: React.FC<{
   const handleSendLobbyChat = useCallback(async () => {
     if (!roomId) return;
     if (status !== 'recruiting') return;
-    const uid = auth.currentUser?.uid ?? effectiveUid;
-    if (!uid) return;
+    // IMPORTANT: Firestore rules require `request.resource.data.uid == request.auth.uid`.
+    // So we must use Firebase Auth uid (not app-local uid).
+    if (!auth.currentUser) {
+      try {
+        await signInAnonymously(auth);
+      } catch {
+        window.alert('送信に失敗しました（ログインに失敗）。');
+        return;
+      }
+    }
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      window.alert('送信に失敗しました（UID取得に失敗）。');
+      return;
+    }
     const raw = lobbyChatText.trim();
     if (!raw) return;
     if (raw.length > 80) {
@@ -728,12 +757,12 @@ const HundredWaitPanel: React.FC<{
       window.alert('このメッセージは送信できません。');
       return;
     }
-    setLobbyChatText('');
     try {
       setLobbyChatError(null);
       const fromUser = (nickname || '').trim() || 'ななし';
       const fromEmoji = (userEmoji || '').trim() || '💬';
-      await addDoc(collection(db, 'hundred_rooms', roomId, 'lobby_messages'), {
+      const createdAtMs = Date.now();
+      const docRef = await addDoc(collection(db, 'hundred_rooms', roomId, 'lobby_messages'), {
         uid,
         name: fromUser,
         emoji: fromEmoji,
@@ -741,32 +770,28 @@ const HundredWaitPanel: React.FC<{
         flagged,
         matched: matches.slice(0, 8),
         createdAt: serverTimestamp(),
-        createdAtMs: Date.now(),
+        createdAtMs,
       });
-
-      // 管理者タイムライン（renraku_private）にも控えを残す（ゲーム開始後も確認できるように）
-      // 権限や通信状況で失敗してもロビーチャット送信は成功扱いにする
-      void addDoc(collection(db, 'renraku_private'), {
-        message:
-          `【みんなであそぶ：ロビーチャット】\n` +
-          `部屋ID: ${roomId}\n` +
-          `送信: ${fromEmoji} ${fromUser}\n` +
-          `\n` +
+      // Optimistic UI: show immediately in the lobby chat box,
+      // even if snapshot is delayed/paused (e.g. during 429 cooldown).
+      setLobbyChat((prev) => {
+        const next = prev.filter((m) => m.id !== docRef.id);
+        next.push({
+          id: docRef.id,
+          uid,
+          name: fromUser,
+          emoji: fromEmoji,
           text,
-        fromUser,
-        fromUserUid: uid,
-        createdAt: serverTimestamp(),
-        status: RENRAKU_STATUS_ACTIVE,
-        isRead: false,
-        meta: {
-          type: 'hundred_lobby_chat',
-          roomId,
           flagged,
-          matched: matches.slice(0, 8),
-        },
-      }).catch((e) => {
-        console.warn('[HundredWaitPanel] renraku_private copy failed', e);
+          createdAtMs,
+        });
+        return next;
       });
+      // Clear input only when the write succeeded.
+      setLobbyChatText('');
+
+      // NOTE: do not mirror lobby chat to renraku_private.
+      // It increases Firestore writes and can trigger quota issues.
     } catch (e: any) {
       console.error('[HundredWaitPanel] send lobby chat failed', {
         code: e?.code,
@@ -811,6 +836,8 @@ const HundredWaitPanel: React.FC<{
       console.warn('[HundredWaitPanel] onCloseRecruitment failed', e);
     });
   }, [onCloseRecruitment, problemsGenerating]);
+
+  // NOTE: Manual reset button removed (auto reset runs before start).
 
   if (status === 'cancelled' && !isHost) {
     return (

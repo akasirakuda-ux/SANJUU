@@ -466,9 +466,10 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <span className="font-medium">ことば探しであそぶ</span>
                 </button>
 
-                {/* 2. ３０（SANJUU）トップへ → sanjuuWebOrigin()＝VITE_SANJUU_WEB_ORIGIN（開発は .env.development） */}
+                {/* 2. SANJUU トップへ → sanjuuWebOrigin()＝VITE_SANJUU_WEB_ORIGIN */}
                 <button
                   type="button"
+                  aria-label="３０ SANJUU であそぶ"
                   className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
                   onClick={() => {
                     vibrate(10);
@@ -476,8 +477,12 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                     window.location.assign(url);
                   }}
                 >
-                  <span className="text-lg leading-none">３０</span>
-                  <span className="font-medium text-center leading-tight">３０（ＳＡＮＪＵＵ）であそぶ</span>
+                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
+                    <span className="text-[22px] xs:text-2xl font-black tabular-nums leading-none text-amber-950">
+                      30
+                    </span>
+                    <span className="text-[11px] xs:text-xs font-bold leading-none text-amber-950/90">SANJUUであそぶ</span>
+                  </span>
                 </button>
 
                 {/* 3. 掲示板 → 三十 `/sanjuu/bulletin`（開発例: http://localhost:3200/sanjuu/bulletin） */}
@@ -507,9 +512,10 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   </span>
                 </button>
 
-                {/* 4. ３０用の募集掲示板（SANJUU トップ・既存 URL パラメータと同じ） */}
+                {/* 4. SANJUU トップ（rkEmoji/rkNick 付き・募集向け） */}
                 <button
                   type="button"
+                  aria-label="３０用の募集掲示板"
                   className={`${hubBtn} bg-gradient-to-r from-sky-200 to-cyan-200 border-sky-700/45 text-sky-950 shadow-md`}
                   onClick={() => {
                     vibrate(10);
@@ -517,8 +523,12 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                     window.location.assign(url);
                   }}
                 >
-                  <span className="text-lg leading-none">３０</span>
-                  <span className="font-medium text-center leading-tight">３０用の募集掲示板</span>
+                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
+                    <span className="text-[22px] xs:text-2xl font-black tabular-nums leading-none text-sky-950">
+                      30
+                    </span>
+                    <span className="text-[11px] xs:text-xs font-bold leading-none text-sky-950/90">募集掲示板</span>
+                  </span>
                 </button>
 
                 {/* 5. みんなの願い */}
@@ -556,7 +566,9 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
             footer={
               <div className="flex flex-col items-center gap-1 text-[10px] text-amber-950/80 font-medium">
                 <span>🐫 {totalPoints.toLocaleString()} pt</span>
-                <span>&copy; 2026 らくだ珈琲</span>
+                <span>
+                  &copy; 2026 らくだ珈琲 · v{import.meta.env.VITE_APP_VERSION}
+                </span>
               </div>
             }
           />

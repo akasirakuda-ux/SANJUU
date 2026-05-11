@@ -1,71 +1,74 @@
 import { spawn } from 'node:child_process';
-import process from 'node:process';
+import path from 'node:path';
 
-const PORT = 3000;
+/**
+ * フル開発起動: らくだ（Vite :5173）＋ SANJUU（`SANJUU/scripts/dev.mjs`）。
+ * プロジェクトルートで `npm run dev` を実行すること（`PS C:\Users\STYLE>` のままでは動かない）。
+ */
 
-function run(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: 'pipe', shell: false, ...opts });
-    let out = '';
-    let err = '';
-    child.stdout?.on('data', (d) => (out += String(d)));
-    child.stderr?.on('data', (d) => (err += String(d)));
-    child.on('close', (code) => resolve({ code: code ?? 0, out, err }));
-    child.on('error', () => resolve({ code: 1, out, err }));
-  });
-}
+const ROOT = process.cwd();
+const SANJUU_DIR = path.join(ROOT, 'SANJUU');
 
-async function killPortWin32(port) {
-  // Prefer Get-NetTCPConnection when available (more reliable than parsing netstat output).
-  const ps = await run(
-    'powershell.exe',
-    [
-      '-NoProfile',
-      '-Command',
-      [
-        '$ErrorActionPreference = "SilentlyContinue";',
-        `$conns = Get-NetTCPConnection -LocalPort ${port} -State Listen;`,
-        'if ($conns) {',
-        '  $pids = $conns | Select-Object -ExpandProperty OwningProcess | Sort-Object -Unique;',
-        '  $pids | ForEach-Object { if ($_ -and $_ -ne 0) { taskkill /PID $_ /F | Out-Null } };',
-        '}',
-      ].join(' '),
-    ],
-    { windowsHide: true },
-  );
+/** @type {import('node:child_process').ChildProcess[]} */
+const children = [];
 
-  // Fallback: netstat + findstr
-  if (ps.code === 0) return;
-
-  const netstat = await run('cmd.exe', ['/c', `netstat -ano | findstr ":${port}"`], { windowsHide: true });
-  const lines = (netstat.out || '')
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const pids = new Set();
-  for (const line of lines) {
-    const m = line.match(/\s(\d+)\s*$/);
-    if (m) pids.add(m[1]);
-  }
-
-  for (const pid of pids) {
-    await run('cmd.exe', ['/c', `taskkill /PID ${pid} /F`], { stdio: 'ignore', windowsHide: true });
+function killChildren() {
+  for (const c of children) {
+    try {
+      c.kill('SIGTERM');
+    } catch {
+      /* ignore */
+    }
   }
 }
 
-async function main() {
-  if (process.platform === 'win32') {
-    await killPortWin32(PORT);
-  }
+console.log('[dev] repo root:', ROOT);
+console.log('[dev] rakuda (Vite) http://localhost:5173/ を起動します …');
 
-  // `strictPort: true` in vite.config.ts keeps this deterministic.
-  const vite = spawn('npx', ['vite', '--port', String(PORT)], { stdio: 'inherit', shell: true });
-  vite.on('close', (code) => process.exit(code ?? 0));
-}
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+const rakuda = spawn('npm', ['run', 'dev:rakuda'], {
+  cwd: ROOT,
+  stdio: 'inherit',
+  shell: 'cmd.exe',
+  env: process.env,
 });
+children.push(rakuda);
 
+console.log('[dev] SANJUU（ws / Next / relay）を起動します …');
+
+const sanjuu = spawn('node', ['scripts/dev.mjs'], {
+  cwd: SANJUU_DIR,
+  stdio: 'inherit',
+  shell: 'cmd.exe',
+  env: process.env,
+});
+children.push(sanjuu);
+
+let shuttingDown = false;
+
+function noteExit(which, code, signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const detail = signal ? `signal=${signal}` : `code=${code}`;
+  console.log(`[dev] ${which} が終了しました (${detail})。もう一方を止めます。`);
+  killChildren();
+  let exitCode = 1;
+  if (signal === 'SIGINT') exitCode = 130;
+  else if (signal === 'SIGTERM') exitCode = 143;
+  else if (code === 0) exitCode = 0;
+  else if (typeof code === 'number') exitCode = code;
+  process.exit(exitCode);
+}
+
+rakuda.on('exit', (code, signal) => noteExit('rakuda (Vite)', code, signal));
+sanjuu.on('exit', (code, signal) => noteExit('SANJUU', code, signal));
+
+function stop(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[dev] ${sig} を受け取りました。子プロセスを終了します…`);
+  killChildren();
+  process.exit(sig === 'SIGINT' ? 130 : 143);
+}
+
+process.on('SIGINT', () => stop('SIGINT'));
+process.on('SIGTERM', () => stop('SIGTERM'));

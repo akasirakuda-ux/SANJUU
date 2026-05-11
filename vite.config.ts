@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'path';
 import type { Plugin } from 'vite';
 import { defineConfig, loadEnv } from 'vite';
@@ -41,6 +42,9 @@ function rakudaDevApiMeProfileStub(): Plugin {
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8')) as {
+      version?: string;
+    };
     return {
       server: {
         // NOTE: SANJUU dev relay typically uses :3000, so keep rakuda (Vite) on a different port.
@@ -67,6 +71,7 @@ export default defineConfig(({ mode }) => {
         }
       },
       define: {
+        'import.meta.env.VITE_APP_VERSION': JSON.stringify(pkg.version ?? ''),
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.GEMINI_API_KEY_2 || env.GEMINI_API_KEY2),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.GEMINI_API_KEY_2 || env.GEMINI_API_KEY2),
         'process.env.GEMINI_API_KEY_2': JSON.stringify(env.GEMINI_API_KEY_2),

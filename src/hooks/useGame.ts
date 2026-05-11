@@ -26,6 +26,7 @@ import {
 import { WORKER_CODE } from '../lib/puzzleWorker';
 import { gridRowsFromFirestore } from '../lib/hundredRoomBoard';
 import { normalizeHundredFoundList } from '../lib/hundredFoundNormalize';
+import { tripFirestoreCircuit } from '../lib/firestoreCircuit';
 import { geminiService } from '../services/geminiService';
 import { stringToSeed } from '../lib/utils';
 import { useSyncRoom } from './useSyncRoom';
@@ -137,6 +138,40 @@ export const useGame = (
 
   const workerRef = useRef<Worker | null>(null);
   const { subscribeRoom, createRoom } = useSyncRoom();
+  // Prevent double-sends of the same found occurrence (e.g. pointerup double-fire / network retry UX)
+  const recentHundredFoundKeysRef = useRef<Set<string>>(new Set());
+
+  const hundredOccurrenceKey = useCallback((word: string, start: Point, end: Point) => {
+    const ax = start.x | 0;
+    const ay = start.y | 0;
+    const bx = end.x | 0;
+    const by = end.y | 0;
+    const k1 = `${word}|${ax},${ay}-${bx},${by}`;
+    const k2 = `${word}|${bx},${by}-${ax},${ay}`;
+    return k1 < k2 ? k1 : k2;
+  }, []);
+
+  const stableRibbonColorFor = useCallback((key: string) => {
+    // Small, deterministic hash -> 10 colors. Keeps arrayUnion idempotent for same answer.
+    let h = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    const ribbonColors = [
+      '#FF6B6B',
+      '#4ECDC4',
+      '#45B7D1',
+      '#FFA502',
+      '#7BED9F',
+      '#70A1FF',
+      '#FF7F50',
+      '#A29BFE',
+      '#E84393',
+      '#2ED573',
+    ];
+    return ribbonColors[Math.abs(h) % ribbonColors.length]!;
+  }, []);
 
   useEffect(() => {
     setSyncShareRoomId(null);
@@ -353,9 +388,11 @@ export const useGame = (
     });
   }, [isMultiplay, roomId, setNotification, createRoom, showPuzzleSizeHint, language]);
 
-  // Room synchronization logic
+  // Room synchronization logic (rooms/{roomId} 系)
+  // NOTE: 「みんなであそぶ(hundred_rooms)」中は rooms/board/progress を購読しない（429対策 + 取り違え防止）
   useEffect(() => {
     if (!roomId || !isMultiplay) return;
+    if (syncFromHundredRooms) return;
 
     const roomRef = doc(db, 'rooms', roomId);
     const unsubscribeRoom = onSnapshot(roomRef, (snapshot) => {
@@ -434,7 +471,7 @@ export const useGame = (
       unsubscribeBoard();
       unsubscribeProgress();
     };
-  }, [roomId, isMultiplay, screen]);
+  }, [roomId, isMultiplay, screen, syncFromHundredRooms]);
 
     // みんなであそぶ: hundred_rooms に保存された grid / words / foundWords を購読 → GameScreen と同一データ
   useEffect(() => {
@@ -449,7 +486,13 @@ export const useGame = (
         }
         const d = snap.data() as Record<string, unknown>;
         const grid = gridRowsFromFirestore(d);
-        if (!grid || !Array.isArray(grid) || grid.length === 0) return;
+        if (!grid || !Array.isArray(grid) || grid.length === 0) {
+          // Safety: never keep showing the previous board if the next board payload is missing/corrupt.
+          // Show loading state instead until a valid grid arrives.
+          setGameState((prev) => ({ ...prev, grid: [], placedWords: [], foundWords: [] }));
+          setIsGenerating(true);
+          return;
+        }
         const targetWord = String(d.targetWord ?? '').trim();
         const boardSize = typeof d.boardSize === 'number' ? d.boardSize : Number(d.boardSize) || 10;
         const words = Array.isArray(d.words) ? d.words : [];
@@ -477,16 +520,53 @@ export const useGame = (
           isKatakana: false,
         };
 
+        const uniqueByOccurrence = (list: any[]) => {
+          const out: any[] = [];
+          const seen = new Set<string>();
+          for (const fw of Array.isArray(list) ? list : []) {
+            const s = fw?.start;
+            const e = fw?.end;
+            if (!s || !e) continue;
+            const ax = Number(s.x);
+            const ay = Number(s.y);
+            const bx = Number(e.x);
+            const by = Number(e.y);
+            if (![ax, ay, bx, by].every(Number.isFinite)) continue;
+            const k1 = `${ax},${ay}-${bx},${by}`;
+            const k2 = `${bx},${by}-${ax},${ay}`;
+            const k = k1 < k2 ? k1 : k2;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(fw);
+          }
+          return out;
+        };
+
+        const totalOccurrences = (() => {
+          let n = 0;
+          for (const pw of words as any[]) {
+            const occs = pw && Array.isArray((pw as any).occurrences) ? (pw as any).occurrences : [];
+            n += occs.length;
+          }
+          return n;
+        })();
+
         // Heavy rooms can emit frequent updates (foundWords / status).
         // Coalesce updates so low-memory devices don't thrash React renders.
         const applyNow = () => {
           hundredRoomPendingPatchRef.current = null;
           hundredRoomApplyTimerRef.current = null;
           hundredRoomLastAppliedAtMsRef.current = Date.now();
-          const remoteFound = normalizeHundredFoundList(d.foundWords);
+          const remoteFoundRaw = normalizeHundredFoundList(d.foundWords);
+          // Safety: guard against duplicate / corrupted foundWords.
+          // - De-dupe by occurrence (coordinates), direction-agnostic
+          // - Clamp to total occurrences so UI can't show "8/5" etc.
+          const remoteFound = uniqueByOccurrence(remoteFoundRaw);
+          const clamped =
+            totalOccurrences > 0 && remoteFound.length > totalOccurrences ? remoteFound.slice(0, totalOccurrences) : remoteFound;
           // hundred_rooms は foundWords を room 全体で管理するため、クライアント側の前状態とマージしない。
           // （前のゲームの foundWords が残ると、入室直後に「既にクリア」扱いになる事故を防ぐ）
-          setGameState((prev) => ({ ...prev, ...patch, foundWords: remoteFound as any }));
+          setGameState((prev) => ({ ...prev, ...patch, foundWords: clamped as any }));
         };
 
         const nowMs = Date.now();
@@ -506,15 +586,23 @@ export const useGame = (
             hundredRoomApplyTimerRef.current = null;
             hundredRoomLastAppliedAtMsRef.current = Date.now();
             if (p) {
-              const remoteFound = normalizeHundredFoundList(d.foundWords);
-              setGameState((prev) => ({ ...prev, ...p, foundWords: remoteFound as any }));
+              const remoteFoundRaw = normalizeHundredFoundList(d.foundWords);
+              const remoteFound = uniqueByOccurrence(remoteFoundRaw);
+              const clamped =
+                totalOccurrences > 0 && remoteFound.length > totalOccurrences
+                  ? remoteFound.slice(0, totalOccurrences)
+                  : remoteFound;
+              setGameState((prev) => ({ ...prev, ...p, foundWords: clamped as any }));
             }
             setIsGenerating(false);
           }, delay);
         }
         setIsGenerating(false);
       },
-      (err) => console.error('[useGame] hundred_rooms subscribe error', { roomId, err })
+      (err) => {
+        tripFirestoreCircuit(db as any, err);
+        console.error('[useGame] hundred_rooms subscribe error', { roomId, err });
+      }
     );
     return () => {
       unsub();
@@ -550,7 +638,9 @@ export const useGame = (
         list.sort((a, b) => b.foundCount - a.foundCount || a.name.localeCompare(b.name, 'ja'));
         setHundredRoster(list);
       },
-      () => {}
+      (err) => {
+        tripFirestoreCircuit(db as any, err);
+      }
     );
     return () => unsub();
   }, [roomId, syncFromHundredRooms]);
@@ -661,20 +751,25 @@ export const useGame = (
     if (!localUid) return;
     const currentUid = requiresFirebaseUid ? localUid : localUid;
 
-    // 正解の帯（リボン）色: 10色から毎回ランダム（プレイヤー固定ではない）
-    const ribbonColors = [
-      '#FF6B6B',
-      '#4ECDC4',
-      '#45B7D1',
-      '#FFA502',
-      '#7BED9F',
-      '#70A1FF',
-      '#FF7F50',
-      '#A29BFE',
-      '#E84393',
-      '#2ED573',
-    ];
-    const assignedColor = ribbonColors[Math.floor(Math.random() * ribbonColors.length)];
+    // 正解の帯（リボン）色
+    // - 通常: ランダム
+    // - みんなであそぶ(hundred_rooms): arrayUnion を idempotent にするため「同一答え(座標)は同一色」に固定
+    const hundredKey = hundredOccurrenceKey(word, start, end);
+    const assignedColor =
+      !isMultiplay && isSyncMode && roomId && syncFromHundredRooms
+        ? stableRibbonColorFor(hundredKey)
+        : [
+            '#FF6B6B',
+            '#4ECDC4',
+            '#45B7D1',
+            '#FFA502',
+            '#7BED9F',
+            '#70A1FF',
+            '#FF7F50',
+            '#A29BFE',
+            '#E84393',
+            '#2ED573',
+          ][Math.floor(Math.random() * 10)]!;
     const displayName = (nickname || '').trim() || 'ななし';
 
     setGameState(prev => {
@@ -722,6 +817,19 @@ export const useGame = (
     if (!isMultiplay && isSyncMode && roomId && syncFromHundredRooms) {
       if (!firebaseUid) return;
       try {
+        // De-dupe "same occurrence" bursts at the sender too.
+        // This avoids duplicate arrayUnion entries even if caller fires twice before Firestore sync catches up.
+        const k = hundredKey;
+        if (recentHundredFoundKeysRef.current.has(k)) return;
+        recentHundredFoundKeysRef.current.add(k);
+        window.setTimeout(() => {
+          try {
+            recentHundredFoundKeysRef.current.delete(k);
+          } catch {
+            /* ignore */
+          }
+        }, 8000);
+
         const shortName = displayName.slice(0, 32);
         await setDoc(
           doc(db, 'hundred_rooms', roomId),

@@ -10,6 +10,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
+import { tripFirestoreCircuit } from '../lib/firestoreCircuit';
 
 export interface Player {
   uid: string;
@@ -35,6 +36,8 @@ export const useMultiplayer = (
   const [isJoined, setIsJoined] = useState(false);
   const isJoinedRef = useRef(false);
   const isJoiningRef = useRef(false);
+  const joinRetryAtMsRef = useRef(0);
+  const joinBackoffMsRef = useRef(800);
 
   // 1. Join Room & Presence
   useEffect(() => {
@@ -56,19 +59,15 @@ export const useMultiplayer = (
     const roomRef = doc(db, 'rooms', roomId);
     const playerRef = doc(db, 'rooms', roomId, 'players', currentUid);
     const playersRef = collection(db, 'rooms', roomId, 'players');
+    let joinRetryTimer: number | null = null;
 
     const joinRoom = async () => {
       if (isJoinedRef.current) return;
       if (isJoiningRef.current) return;
+      const now = Date.now();
+      if (now < joinRetryAtMsRef.current) return;
       isJoiningRef.current = true;
       try {
-        // Check player count (limit)
-        const { getDocs, query, limit } = await import('firebase/firestore');
-        const playersSnap = await getDocs(query(playersRef, limit(MAX_ROOM_PLAYERS + 1)));
-        if (playersSnap.size >= MAX_ROOM_PLAYERS && !playersSnap.docs.some(d => d.id === currentUid)) {
-          throw new Error('ROOM_FULL');
-        }
-
         await runTransaction(db, async (transaction) => {
           const roomSnap = await transaction.get(roomRef);
           const roomData = roomSnap.data();
@@ -104,8 +103,24 @@ export const useMultiplayer = (
         });
         setIsJoined(true);
         isJoinedRef.current = true;
+        joinBackoffMsRef.current = 800;
+        joinRetryAtMsRef.current = 0;
       } catch (e: any) {
         console.error("Error joining room:", e);
+        // If Firestore is throttling us, stop retry storms.
+        tripFirestoreCircuit(db, e, { cooldownMs: 10_000 });
+
+        // Backoff join attempts (covers both 429 and transient failures).
+        const next = Math.min(15_000, Math.max(800, joinBackoffMsRef.current));
+        joinRetryAtMsRef.current = Date.now() + next;
+        joinBackoffMsRef.current = Math.min(15_000, Math.floor(next * 1.8));
+        if (joinRetryTimer != null) {
+          try { window.clearTimeout(joinRetryTimer); } catch { /* ignore */ }
+        }
+        joinRetryTimer = window.setTimeout(() => {
+          joinRetryTimer = null;
+          void joinRoom();
+        }, next);
       } finally {
         isJoiningRef.current = false;
       }
@@ -113,34 +128,54 @@ export const useMultiplayer = (
 
     joinRoom();
 
-    // 5. 参加者リストのリアルタイム購読（常に実行）
-    const unsubscribePlayers = onSnapshot(playersRef, (snapshot) => {
-      const pList = snapshot.docs.map(doc => ({
-        uid: doc.id,
-        ...doc.data()
-      })) as Player[];
-      
-      pList.sort((a, b) => a.joinedAt - b.joinedAt);
-      setPlayers(pList);
-    });
-
     // 10. 部屋の状態管理（常に実行）
-    const unsubscribeRoom = onSnapshot(roomRef, (snapshot) => {
-      const data = snapshot.data();
-      if (data) {
-        setRoomStatus(data.status || 'waiting');
-        setRoomHostId(data.hostId || null);
-        
-        // ゲストの場合、まだ参加していなくてホストが決まったら参加を試みる
-        if (!isJoinedRef.current && !isRoomCreator && data.hostId) {
-          joinRoom();
+    // NOTE: 429 時に onSnapshot が内部リトライして batchGet を連打しがちなので、
+    // error callback で回路遮断して “嵐” を止める。
+    const unsubscribeRoom = onSnapshot(
+      roomRef,
+      (snapshot) => {
+        const data = snapshot.data();
+        if (data) {
+          setRoomStatus(data.status || 'waiting');
+          setRoomHostId(data.hostId || null);
+
+          // ゲストの場合、まだ参加していなくてホストが決まったら参加を試みる
+          if (!isJoinedRef.current && !isRoomCreator && (data as any).hostId) {
+            joinRoom();
+          }
         }
+      },
+      (err) => {
+        tripFirestoreCircuit(db, err, { cooldownMs: 10_000 });
       }
-    });
+    );
+
+    // 5. 参加者リストのリアルタイム購読（join 後だけ）
+    // join 前から players を購読すると、join 失敗時に不要な read/retry が増える。
+    const unsubscribePlayers = onSnapshot(
+      playersRef,
+      (snapshot) => {
+        if (!isJoinedRef.current && !isRoomCreator) return;
+        const pList = snapshot.docs.map(doc => ({
+          uid: doc.id,
+          ...doc.data()
+        })) as Player[];
+        
+        pList.sort((a, b) => a.joinedAt - b.joinedAt);
+        setPlayers(pList);
+      },
+      (err) => {
+        tripFirestoreCircuit(db, err, { cooldownMs: 10_000 });
+      }
+    );
 
     return () => {
-      unsubscribePlayers();
       unsubscribeRoom();
+      unsubscribePlayers();
+      if (joinRetryTimer != null) {
+        try { window.clearTimeout(joinRetryTimer); } catch { /* ignore */ }
+        joinRetryTimer = null;
+      }
     };
   }, [roomId, userId, nickname, userEmoji, isRoomCreator]);
 

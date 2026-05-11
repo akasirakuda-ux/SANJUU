@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { auth, db } from '../firebase';
 import { 
   signInAnonymously, 
@@ -17,6 +17,45 @@ import { signOut } from 'firebase/auth';
 export const useAuth = (language: string, setNotification: (msg: string | null) => void) => {
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const lastSessionCookieUidRef = useRef<string | null>(null);
+
+  const syncSessionCookie = useCallback(async (user: any) => {
+    try {
+      if (!user) return;
+      const uid = String(user.uid ?? '').trim();
+      if (!uid) return;
+      if (lastSessionCookieUidRef.current === uid) return;
+      const key = 'rk_session_cookie_uid_v1';
+      const already = (() => {
+        try {
+          return window.localStorage.getItem(key) === uid;
+        } catch {
+          return false;
+        }
+      })();
+      if (already) {
+        lastSessionCookieUidRef.current = uid;
+        return;
+      }
+
+      const idToken = await user.getIdToken();
+      if (!idToken) return;
+      const r = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      if (!r.ok) return;
+      try {
+        window.localStorage.setItem(key, uid);
+      } catch {
+        // ignore
+      }
+      lastSessionCookieUidRef.current = uid;
+    } catch {
+      // ignore (fail-open)
+    }
+  }, []);
 
   const shouldForceRedirectLogin = useCallback((): boolean => {
     try {
@@ -36,6 +75,15 @@ export const useAuth = (language: string, setNotification: (msg: string | null) 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       setIsAuthReady(true);
+      // Mint / refresh a same-origin session cookie for /api/me/profile (SANJUU reads without Authorization).
+      if (user) void syncSessionCookie(user);
+      else {
+        try {
+          window.localStorage.removeItem('rk_session_cookie_uid_v1');
+        } catch {
+          // ignore
+        }
+      }
     });
 
     // Test Firestore connection
@@ -67,7 +115,7 @@ export const useAuth = (language: string, setNotification: (msg: string | null) 
     });
 
     return () => unsubscribe();
-  }, [language, setNotification]);
+  }, [language, setNotification, syncSessionCookie]);
 
   const ensureAuth = useCallback(async () => {
     if (!auth.currentUser) {

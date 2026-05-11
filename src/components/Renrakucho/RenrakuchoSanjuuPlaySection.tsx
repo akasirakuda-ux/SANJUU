@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { sanjuuWebOrigin } from '../../lib/sanjuuWebOrigin';
 import SanjuuBrandHeading from '../SanjuuBrandHeading';
 
 export type SanjuuPlayRoomListing = {
@@ -12,11 +13,6 @@ export type SanjuuPlayRoomListing = {
 function sanjuuHttpBase(): string {
   const v = (import.meta.env.VITE_SANJUU_HTTP_BASE as string | undefined)?.trim();
   return v || 'http://localhost:8080';
-}
-
-function sanjuuWebOrigin(): string {
-  const v = (import.meta.env.VITE_SANJUU_WEB_ORIGIN as string | undefined)?.trim();
-  return v || 'http://localhost:3000';
 }
 
 function goPlay(roomId: number, hostKey?: string) {

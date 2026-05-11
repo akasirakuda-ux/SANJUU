@@ -1,6 +1,8 @@
 import express from 'express';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +16,9 @@ app.disable('x-powered-by');
 
 app.use(express.json({ limit: '64kb' }));
 app.use(express.urlencoded({ extended: false }));
+
+const require = createRequire(import.meta.url);
+const httpProxy = require('http-proxy');
 
 /**
  * Canonical host redirect.
@@ -41,6 +46,182 @@ app.use((req, res, next) => {
   } catch {
     next();
   }
+});
+
+// Safety belt: keep `/api/*` out of SPA/static fallbacks.
+// (Some infra / proxies can mis-route; returning JSON here makes failures obvious.)
+app.use('/api', (_req, res, next) => {
+  res.setHeader('cache-control', 'no-store');
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  next();
+});
+
+/**
+ * Reverse proxy to SANJUU (sub-app).
+ *
+ * - HTTP: `/sanjuu/*` -> SANJUU web (Next)
+ * - WS:   `/ws`       -> SANJUU ws engine
+ *
+ * Targets should be set by runtime env (Cloud Run / local):
+ * - SANJUU_WEB_PROXY_TARGET (e.g. https://sanjuu.example.com)
+ * - SANJUU_WS_PROXY_TARGET  (e.g. wss://sanjuu.example.com/ws OR ws://127.0.0.1:8080/ws)
+ */
+const SANJUU_WEB_PROXY_TARGET = String(process.env.SANJUU_WEB_PROXY_TARGET ?? '').trim() || 'http://127.0.0.1:3000';
+const SANJUU_WS_PROXY_TARGET =
+  String(process.env.SANJUU_WS_PROXY_TARGET ?? '').trim() || 'ws://127.0.0.1:8080/ws';
+
+const proxySanjuuWeb = httpProxy.createProxyServer({ changeOrigin: true, ws: false });
+const proxySanjuuWs = httpProxy.createProxyServer({ changeOrigin: true, ws: true });
+
+function proxyErr(tag, err) {
+  // eslint-disable-next-line no-console
+  console.error(`[proxy:${tag}]`, err?.message ?? err);
+}
+proxySanjuuWeb.on('error', (err) => proxyErr('sanjuu-web', err));
+proxySanjuuWs.on('error', (err) => proxyErr('sanjuu-ws', err));
+
+// Lightweight profile endpoint for cross-app use (e.g. 30SANJUU).
+// If a Firebase ID token is provided, returns the synced profile from `rk_users/{uid}`.
+// Fail-safe: always returns { ok: true, profile: { emoji, nickname } } with empty fields on errors.
+let _admin = null;
+async function getFirebaseAdmin() {
+  if (_admin) return _admin;
+  const [{ initializeApp }, { getAuth }, { getFirestore }] = await Promise.all([
+    import('firebase-admin/app'),
+    import('firebase-admin/auth'),
+    import('firebase-admin/firestore'),
+  ]);
+  // Use Application Default Credentials (Cloud Run / GCP).
+  const app = initializeApp();
+  _admin = { auth: getAuth(app), db: getFirestore(app) };
+  return _admin;
+}
+
+// Keep /api endpoints above any proxy / SPA fallbacks.
+app.post(['/api/session', '/api/session/'], async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const idToken = String(body.idToken ?? '').trim();
+    if (!idToken) {
+      res.status(400).json({ ok: false, error: 'idToken required' });
+      return;
+    }
+
+    const { auth } = await getFirebaseAdmin();
+    // 14 days (max recommended by Firebase)
+    const expiresIn = 14 * 24 * 60 * 60 * 1000;
+    const sessionCookie = await auth.createSessionCookie(idToken, { expiresIn });
+
+    const xfp = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase();
+    const secure =
+      req.secure ||
+      xfp === 'https' ||
+      (typeof process.env.FORCE_SECURE_COOKIE === 'string' && process.env.FORCE_SECURE_COOKIE.trim() === '1');
+
+    const maxAge = Math.floor(expiresIn / 1000);
+    const parts = [
+      `__session=${encodeURIComponent(sessionCookie)}`,
+      `Max-Age=${maxAge}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+    ];
+    if (secure) parts.push('Secure');
+    res.setHeader('set-cookie', parts.join('; '));
+
+    res.status(200).json({ ok: true });
+  } catch (e) {
+    console.warn('[api/session]', e);
+    res.status(500).json({ ok: false, error: 'internal error' });
+  }
+});
+
+app.get(['/api/me/profile', '/api/me/profile/'], async (req, res) => {
+  res.setHeader('access-control-allow-origin', '*');
+  const empty = { ok: true, profile: { emoji: '', nickname: '' } };
+
+  function parseCookie(header) {
+    const out = {};
+    const raw = typeof header === 'string' ? header : '';
+    for (const part of raw.split(';')) {
+      const i = part.indexOf('=');
+      if (i < 0) continue;
+      const k = part.slice(0, i).trim();
+      const v = part.slice(i + 1).trim();
+      if (!k) continue;
+      try {
+        out[k] = decodeURIComponent(v);
+      } catch {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  try {
+    const authz = String(req.headers.authorization ?? '').trim();
+    const m = authz.match(/^Bearer\s+(.+)$/i);
+    let token = m?.[1]?.trim();
+
+    // Fallback for same-origin cookie-based sessions.
+    // Note: This app doesn't mint cookies itself; if an infra layer sets a Firebase Session Cookie
+    // (commonly `__session` on Firebase Hosting), we can still verify it here.
+    if (!token) {
+      const cookies = parseCookie(req.headers.cookie);
+      token =
+        String(
+          cookies.__session ??
+          cookies.session ??
+          cookies.rk_session ??
+          cookies.rk_id_token ??
+          cookies.idToken ??
+          ''
+        ).trim() || null;
+    }
+
+    if (!token) {
+      res.status(200).json(empty);
+      return;
+    }
+
+    const { auth, db } = await getFirebaseAdmin();
+    // Try session cookie first (if it's one). If not, fall back to ID token.
+    let uid = '';
+    try {
+      const decoded = await auth.verifySessionCookie(token, true);
+      uid = String(decoded?.uid ?? '').trim();
+    } catch {
+      const decoded = await auth.verifyIdToken(token);
+      uid = String(decoded?.uid ?? '').trim();
+    }
+    if (!uid) {
+      res.status(200).json(empty);
+      return;
+    }
+
+    const snap = await db.collection('rk_users').doc(uid).get();
+    const d = snap.exists ? (snap.data() ?? {}) : {};
+    const nickname = typeof d.nickname === 'string' ? d.nickname : '';
+    const emoji = typeof d.userEmoji === 'string' ? d.userEmoji : '';
+
+    res.status(200).json({ ok: true, profile: { emoji, nickname } });
+  } catch (e) {
+    console.warn('[api/me/profile]', e);
+    res.status(200).json(empty);
+  }
+});
+
+app.use('/sanjuu', (req, res) => {
+  // Never proxy /api/* (safety belt: helps if a future change nests paths).
+  if ((req.path || '').startsWith('/api/')) {
+    res.status(404).json({ ok: false, error: 'not found' });
+    return;
+  }
+  // Strip `/sanjuu` so SANJUU web can be served as-is.
+  // `/sanjuu` -> `/`, `/sanjuu/foo` -> `/foo`
+  req.url = (req.url || '').replace(/^\/+/, '/');
+  if (req.url === '/' || req.url === '') req.url = '/';
+  proxySanjuuWeb.web(req, res, { target: SANJUU_WEB_PROXY_TARGET });
 });
 
 app.post('/api/submit-to-teacher', async (req, res) => {
@@ -93,6 +274,11 @@ app.post('/api/submit-to-teacher', async (req, res) => {
   }
 });
 
+// If an /api route isn't handled above, return JSON 404 (never SPA fallback).
+app.use('/api', (_req, res) => {
+  res.status(404).json({ ok: false, error: 'not found' });
+});
+
 // Static assets (hashed files, icons, etc.)
 app.use(express.static(distDir, { index: false, etag: true, maxAge: '1h' }));
 
@@ -102,7 +288,23 @@ app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(distDir, 'index.html'));
 });
 
-app.listen(port, () => {
+const server = http.createServer(app);
+server.on('upgrade', (req, socket, head) => {
+  try {
+    const p = req.url || '';
+    if (p === '/ws' || p.startsWith('/ws?')) {
+      proxySanjuuWs.ws(req, socket, head, { target: SANJUU_WS_PROXY_TARGET });
+      return;
+    }
+  } catch (e) {
+    proxyErr('upgrade', e);
+  }
+  socket.destroy();
+});
+
+server.listen(port, () => {
   console.log(`[server] listening on :${port}`);
+  console.log(`[proxy] /sanjuu -> ${SANJUU_WEB_PROXY_TARGET}`);
+  console.log(`[proxy] /ws -> ${SANJUU_WS_PROXY_TARGET}`);
 });
 

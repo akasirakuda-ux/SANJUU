@@ -120,6 +120,13 @@ export const useAppShell = () => {
   const [isRoomCreator, setIsRoomCreator] = useState(false);
   const [syncCountdown, setSyncCountdown] = useState(0);
 
+  // IMPORTANT:
+  // `useMultiplayer` is for normal multiplayer (`rooms/{roomId}`).
+  // In "みんなであそぶ" we reuse `roomId` for `hundred_rooms/{roomId}`.
+  // If we keep `useMultiplayer` running, it will subscribe/join `rooms/{roomId}` with a hundred id,
+  // causing extra Firestore traffic and 429 retry storms right when the problem screen opens.
+  const multiplayerRoomId = isMultiplay && !syncFromHundredRooms ? roomId : null;
+
   const {
     players: roomPlayers,
     isHost: isHostFromMultiplayer,
@@ -127,7 +134,7 @@ export const useAppShell = () => {
     roomStatus,
     toggleReady,
     updateRoomStatus,
-  } = useMultiplayer(roomId, nickname, userEmoji, firebaseUser?.uid || null, isRoomCreator);
+  } = useMultiplayer(multiplayerRoomId, nickname, userEmoji, firebaseUser?.uid || null, isRoomCreator);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showInstructionModal, setShowInstructionModal] = useState(false);
@@ -874,7 +881,8 @@ export const useAppShell = () => {
       setShowRenrakucho(false);
       // みんなであそぶは既存 GameScreen + hundred_rooms（grid/words/foundWords）購読
       // 前のゲームの foundWords が残ると入室直後に帯が出て「即クリア」扱いになるため、先にクリアする
-      setGameState((prev) => ({ ...prev, foundWords: [] }));
+      // foundWords だけでなく盤面自体も空にする（新ルームの盤面が届くまで前の盤面が見えてしまう事故を防ぐ）
+      setGameState((prev) => ({ ...prev, grid: [], placedWords: [], foundWords: [] }));
       setIsMultiplay(false);
       setIsSyncMode(true);
       setSyncFromHundredRooms(true);

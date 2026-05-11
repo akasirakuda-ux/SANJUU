@@ -126,6 +126,8 @@ const HundredCreate: React.FC<HundredCreateProps> = ({ hostNickname, hostEmoji, 
             recruitDeadlineAt,
             playerCount: 0,
             gameTimeLimitSec,
+            // Safety: if roomId ever collides / is reused, don't keep old ribbons.
+            foundWords: [],
           },
           { merge: true }
         );

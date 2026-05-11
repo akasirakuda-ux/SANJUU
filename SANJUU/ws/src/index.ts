@@ -11,6 +11,8 @@ import { TextDecoder, TextEncoder } from 'node:util';
 type ClientMeta = {
   roomId?: number;
   isAlive: boolean;
+  /** 連続して pong が返らなかった回数（プロキシ越し WS でも切られにくくする） */
+  pingMiss: number;
 };
 
 type Room = {
@@ -44,6 +46,8 @@ const MAX_ROOMS = clampInt(Number(process.env.MAX_ROOMS ?? 100), 1, 1000);
 const ROOM_CAPACITY = 30;
 const CLEANUP_IDLE_MS = clampInt(Number(process.env.CLEANUP_IDLE_MS ?? 15 * 60_000), 60_000, 24 * 60 * 60_000);
 const DIFF_TICK_MS = clampInt(Number(process.env.DIFF_TICK_MS ?? 5), 1, 50);
+const WS_PING_MS = clampInt(Number(process.env.WS_PING_MS ?? 45_000), 15_000, 120_000);
+const WS_PING_MAX_MISS = clampInt(Number(process.env.WS_PING_MAX_MISS ?? 4), 2, 12);
 
 // /play (900bit) config
 const PLAY_SIZE = 30;
@@ -73,6 +77,7 @@ type PlayClient = {
   ws: WebSocket;
   roomId?: number;
   isAlive: boolean;
+  pingMiss: number;
   tag: 0 | 1 | 2 | 3; // 0 normal, 1 slow, 2 freeze, 3 spam
 };
 
@@ -407,23 +412,11 @@ function getRoomOrUndefined(roomId: number): Room | undefined {
   return rooms.get(roomId);
 }
 
-function createRoom(req: CreateRoomRequest): CreateRoomResponse | { error: { code: string; message?: string } } {
-  if (rooms.size >= MAX_ROOMS) return { error: { code: 'rooms_limit' } };
-  const password = String(req.password ?? '');
-  if (password.length < 1 || password.length > 64) return { error: { code: 'bad_password' } };
-  if (req.roomName && hasNgWord(req.roomName)) return { error: { code: 'ng_word' } };
-
-  // roomId: uint32 (URLはbase36)
-  let roomId = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
-  if (roomId === 0) roomId = 1;
-  while (rooms.has(roomId)) {
-    roomId = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
-    if (roomId === 0) roomId = 1;
-  }
-
+/** サンジュー30マスルームのバッファ初期化込みオブジェクトを作る（create と dev seed 共通） */
+function buildSanjuuRoom(id: number, passwordPlain: string): Room {
   const room: Room = {
-    id: roomId,
-    passwordHash: sha256Base64Url(password),
+    id,
+    passwordHash: sha256Base64Url(passwordPlain),
     createdAt: nowMs(),
     lastActiveAt: nowMs(),
     mask: 0,
@@ -443,14 +436,40 @@ function createRoom(req: CreateRoomRequest): CreateRoomResponse | { error: { cod
     fullBufB: new Uint8Array(5),
     useFullA: true,
   };
-  // Pre-create views to avoid per-tick allocations
   room.diffViewsA[0] = room.diffBufA.subarray(0, 0);
   room.diffViewsB[0] = room.diffBufB.subarray(0, 0);
   for (let k = 1; k <= 30; k++) {
     room.diffViewsA[k] = room.diffBufA.subarray(0, 3 * k * DIFF_REPEAT_MAX);
     room.diffViewsB[k] = room.diffBufB.subarray(0, 3 * k * DIFF_REPEAT_MAX);
   }
-  rooms.set(roomId, room);
+  return room;
+}
+
+/** トップの「例の参加ページ」/r/demo が即接続できるよう、非本番のみ固定ルームを用意 */
+function seedDevDemoRoom() {
+  if (process.env.NODE_ENV === 'production') return;
+  const slug = 'demo';
+  const id = Number.parseInt(slug, 36) >>> 0;
+  if (id === 0 || rooms.has(id)) return;
+  rooms.set(id, buildSanjuuRoom(id, 'demo'));
+  console.log(`[sanjuu-ws] dev: seeded /r/${slug} (id=${id})`);
+}
+
+function createRoom(req: CreateRoomRequest): CreateRoomResponse | { error: { code: string; message?: string } } {
+  if (rooms.size >= MAX_ROOMS) return { error: { code: 'rooms_limit' } };
+  const password = String(req.password ?? '');
+  if (password.length < 1 || password.length > 64) return { error: { code: 'bad_password' } };
+  if (req.roomName && hasNgWord(req.roomName)) return { error: { code: 'ng_word' } };
+
+  // roomId: uint32 (URLはbase36)
+  let roomId = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
+  if (roomId === 0) roomId = 1;
+  while (rooms.has(roomId)) {
+    roomId = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
+    if (roomId === 0) roomId = 1;
+  }
+
+  rooms.set(roomId, buildSanjuuRoom(roomId, password));
   return { roomId: roomId.toString(10), joinUrlPath: `/r/${roomId.toString(36)}` };
 }
 
@@ -645,8 +664,12 @@ const server = http.createServer((req, res) => {
   );
   // defaults: local dev + production frontends
   allowList.add('http://localhost:3000');
+  allowList.add('http://127.0.0.1:3000');
+  allowList.add('http://localhost:3001');
+  allowList.add('http://127.0.0.1:3001');
   allowList.add('http://localhost:5173');
   allowList.add('http://localhost:8080');
+  allowList.add('http://127.0.0.1:8080');
   allowList.add('https://rakuda.coffee');
   allowList.add('https://rakuda.coffee/');
   allowList.add('https://sanjuu.vercel.app');
@@ -969,7 +992,7 @@ function playHostCommand(ws: WebSocket, op: number, payload: Uint8Array) {
 }
 
 wss.on('connection', (ws) => {
-  const meta: ClientMeta = { isAlive: true };
+  const meta: ClientMeta = { isAlive: true, pingMiss: 0 };
   clientMeta.set(ws, meta);
   clientTag.set(ws, 0);
 
@@ -1012,7 +1035,7 @@ wss.on('connection', (ws) => {
 
 playWss.on('connection', (ws) => {
   playConnections++;
-  const meta: PlayClient = { ws, isAlive: true, tag: 0 };
+  const meta: PlayClient = { ws, isAlive: true, pingMiss: 0, tag: 0 };
   playClientMeta.set(ws, meta);
 
   ws.on('pong', () => {
@@ -1061,47 +1084,49 @@ playWss.on('connection', (ws) => {
   });
 });
 
+// Keepalive: pong がプロキシ越しで遅れたときに切らないよう、複数ラウンド許容する
+function sweepClients(
+  iterate: Iterable<WebSocket>,
+  getMeta: (ws: WebSocket) => ClientMeta | PlayClient | undefined,
+  detach: (ws: WebSocket) => void,
+) {
+  for (const ws of iterate) {
+    const meta = getMeta(ws);
+    if (!meta) continue;
+
+    if (!meta.isAlive) {
+      meta.pingMiss++;
+      if (meta.pingMiss >= WS_PING_MAX_MISS) {
+        detach(ws);
+        try {
+          ws.terminate();
+        } catch {}
+        continue;
+      }
+    } else {
+      meta.pingMiss = 0;
+    }
+
+    meta.isAlive = false;
+    try {
+      ws.ping();
+    } catch {}
+  }
+}
+
 // Keepalive: dead connection cleanup
 setInterval(() => {
-  for (const ws of (wss as any).clients ?? []) {
-    // unused when clientTracking=false
-  }
-  // We track via rooms sets instead (small: max 3000)
   for (const room of rooms.values()) {
-    for (const ws of room.clients) {
-      const meta = clientMeta.get(ws);
-      if (!meta) continue;
-      if (!meta.isAlive) {
-        room.clients.delete(ws);
-        try {
-          ws.terminate();
-        } catch {}
-        continue;
-      }
-      meta.isAlive = false;
-      try {
-        ws.ping();
-      } catch {}
-    }
+    sweepClients(room.clients, (ws) => clientMeta.get(ws), (dead) => {
+      room.clients.delete(dead);
+    });
   }
   for (const room of playRooms.values()) {
-    for (const ws of room.clients) {
-      const meta = playClientMeta.get(ws);
-      if (!meta) continue;
-      if (!meta.isAlive) {
-        room.clients.delete(ws);
-        try {
-          ws.terminate();
-        } catch {}
-        continue;
-      }
-      meta.isAlive = false;
-      try {
-        ws.ping();
-      } catch {}
-    }
+    sweepClients(room.clients, (ws) => playClientMeta.get(ws), (dead) => {
+      room.clients.delete(dead);
+    });
   }
-}, 20_000).unref();
+}, WS_PING_MS).unref();
 
 // Idle room cleanup
 setInterval(() => {
@@ -1247,7 +1272,11 @@ setInterval(() => {
   console.log(`[metrics] ${JSON.stringify(out)}`);
 }, 1000).unref();
 
-server.listen(PORT, () => {
-  console.log(`[sanjuu-ws] listening http://localhost:${PORT} (ws ${WS_PATH}, playws ${PLAY_WS_PATH})`);
+// IPv4 の 127.0.0.1 / 0.0.0.0 からの接続を確実に受ける（listen(PORT) だけだと :: のみになり、127.0.0.1 の WS が張れない環境がある）
+server.listen(PORT, '0.0.0.0', () => {
+  seedDevDemoRoom();
+  console.log(
+    `[sanjuu-ws] listening http://127.0.0.1:${PORT} (ws ${WS_PATH}, playws ${PLAY_WS_PATH}) — bound 0.0.0.0:${PORT}`
+  );
 });
 
