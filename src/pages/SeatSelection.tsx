@@ -473,8 +473,12 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
                   onClick={() => {
                     vibrate(10);
-                    const url = `${sanjuuWebOrigin().replace(/\/+$/, '')}/`;
-                    window.location.assign(url);
+                    // クエリなしの三十トップのみ（rkEmoji 付き URL と混同しないよう明示的に除去）
+                    const root = sanjuuWebOrigin().replace(/\/+$/, '');
+                    const u = new URL(`${root}/`);
+                    u.search = '';
+                    u.hash = '';
+                    window.location.assign(u.href);
                   }}
                 >
                   <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
