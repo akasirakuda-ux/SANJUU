@@ -30,6 +30,21 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   }
 }
 
+/** 一度だけ https://rakuda.coffee/?sanjuuLocal=1 を開くと、30・掲示板が localhost:3200 になる（フラグ保存後は通常 URL でよい） */
+if (typeof window !== 'undefined') {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('sanjuuLocal') === '1') {
+      localStorage.setItem('rk_sanjuu_use_localhost', '1');
+      sp.delete('sanjuuLocal');
+      const q = sp.toString();
+      window.history.replaceState({}, '', window.location.pathname + (q ? `?${q}` : '') + window.location.hash);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 const showFatalOverlay = (title: string, msg: unknown, url?: unknown, lineNo?: unknown, error?: unknown) => {
   const errorDiv = document.createElement('div');
   errorDiv.style.position = 'fixed';

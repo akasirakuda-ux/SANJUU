@@ -6,21 +6,25 @@ function stripTrailingSlashes(s: string): string {
 
 /**
  * SANJUU Next のオリジン（`VITE_SANJUU_WEB_ORIGIN`。本番は `.env.production`）。
- * - `vite` / `npm run dev:rakuda` のとき（import.meta.env.DEV）: **常に** `http://localhost:3200`
- *   （環境変数の取り違えで本番 thirty に飛ぶのを防ぐ）。
- * - `vite build` 後にブラウザが `localhost` / `127.0.0.1` のときもローカル既定。
- * - **`https://rakuda.coffee` のようなインターネットの URL** では localhost には届かない（ブラウザの仕様）。
- *   開発時は **`http://localhost:5173`** でらくだを開く。
+ * - DEV: 常に `http://localhost:3200`
+ * - 本番ビルドでも `localStorage rk_sanjuu_use_localhost=1` なら `http://localhost:3200`（開発者用・1ブラウザで1回設定）
  */
 export function sanjuuWebOrigin(): string {
-  const raw = (import.meta.env.VITE_SANJUU_WEB_ORIGIN as string | undefined)?.trim();
   if (import.meta.env.DEV) {
     return SANJUU_WEB_FALLBACK_LOCAL;
   }
 
+  const raw = (import.meta.env.VITE_SANJUU_WEB_ORIGIN as string | undefined)?.trim();
   const baked = raw ? stripTrailingSlashes(raw) : SANJUU_WEB_FALLBACK_LOCAL;
 
   if (typeof window !== 'undefined') {
+    try {
+      if (window.localStorage.getItem('rk_sanjuu_use_localhost') === '1') {
+        return SANJUU_WEB_FALLBACK_LOCAL;
+      }
+    } catch {
+      /* private mode 等 */
+    }
     const h = window.location.hostname.toLowerCase();
     if (h === 'localhost' || h === '127.0.0.1') {
       return SANJUU_WEB_FALLBACK_LOCAL;
