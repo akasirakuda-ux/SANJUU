@@ -142,7 +142,7 @@ const Entrance: React.FC<EntranceProps> = ({ onEnter }) => {
           広告 {isStreamMode ? 'なし' : 'あり'}
         </button>
         <div className="mt-1 text-[10px] font-bold text-slate-700 bg-white/90 border border-slate-200 rounded-xl px-2 py-1 shadow-sm">
-          build: 2026-04-28.12-45
+          build: v{import.meta.env.VITE_APP_VERSION || '?'}
         </div>
       </div>
 
