@@ -1,0 +1,101 @@
+.wrap {
+  border: 1px solid color-mix(in oklab, var(--foreground) 18%, transparent);
+  border-radius: 14px;
+  padding: 16px;
+  background: color-mix(in oklab, var(--foreground) 4%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.badge {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 24%, transparent);
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+
+.lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: color-mix(in oklab, var(--foreground) 78%, transparent);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.emojiIn {
+  width: 4rem;
+  text-align: center;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 16%, transparent);
+  font-size: 18px;
+  background: var(--background);
+}
+
+.nameIn {
+  flex: 1;
+  min-width: 140px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--foreground) 16%, transparent);
+  font-size: 14px;
+  background: var(--background);
+}
+
+.preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.previewLabel {
+  font-weight: 800;
+  font-size: 11px;
+  color: color-mix(in oklab, var(--foreground) 55%, transparent);
+}
+
+.previewBody {
+  font-weight: 700;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: none;
+  font-weight: 800;
+  font-size: 13px;
+  cursor: pointer;
+  background: color-mix(in oklab, var(--foreground) 88%, transparent);
+  color: var(--background);
+}
+
+.link {
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.ok {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: color-mix(in oklab, var(--foreground) 58%, transparent);
+}
