@@ -50,6 +50,35 @@ const AdSpace: React.FC<AdSpaceProps> = ({
   const pushTriedRef = useRef(false);
   const [loadError, setLoadError] = useState(false);
 
+  // AdSense が iframe を position:fixed で大きく描くと、overflow だけでは親外に見える。
+  // transform がある祖先は fixed の包含ブロックになるため、90px 内に閉じ込める。
+  const adClipBoxStyle = useMemo(
+    () =>
+      ({
+        height: BANNER_CSS_PX,
+        maxHeight: BANNER_CSS_PX,
+        transform: 'translateZ(0)',
+        overflow: 'hidden',
+      }) as const,
+    []
+  );
+
+  // 400 などで iframe 読み込み失敗したとき、黒巨大プレースホルダを止める（端末差あり）。
+  useEffect(() => {
+    if (!isVisible || !enabled || loadError) return;
+    const onErr = (ev: Event) => {
+      const t = ev.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.tagName !== 'IFRAME') return;
+      const src = t.getAttribute('src') ?? '';
+      if (src.includes('doubleclick.net') || src.includes('googleads.g.')) {
+        setLoadError(true);
+      }
+    };
+    window.addEventListener('error', onErr, true);
+    return () => window.removeEventListener('error', onErr, true);
+  }, [enabled, isVisible, loadError]);
+
   // Expose fixed-banner height to layout via CSS variable.
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -144,20 +173,24 @@ const AdSpace: React.FC<AdSpaceProps> = ({
           AD
         </span>
         {enabled && !loadError ? (
-          <div className="relative min-h-0 min-w-0 flex-1 h-[90px] max-h-[90px] overflow-hidden flex items-center justify-center [&_iframe]:max-h-[90px] [&_iframe]:max-w-full">
+          <div
+            className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[90px] [&_iframe]:!max-w-full"
+            style={adClipBoxStyle}
+          >
             <ins
-              className="adsbygoogle block w-full max-w-full max-h-[90px] overflow-hidden"
+              className="adsbygoogle block w-full max-w-full !max-h-[90px] overflow-hidden"
               style={{
                 display: 'block',
                 width: '100%',
+                maxWidth: '100%',
                 height: BANNER_CSS_PX,
                 maxHeight: BANNER_CSS_PX,
                 overflow: 'hidden',
               }}
               data-ad-client={ADSENSE_CLIENT}
               data-ad-slot={adSlot}
-              data-ad-format="auto"
-              data-full-width-responsive="true"
+              data-ad-format="horizontal"
+              data-full-width-responsive="false"
             />
           </div>
         ) : (
