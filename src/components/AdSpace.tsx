@@ -20,12 +20,13 @@ const ADSENSE_CLIENT = 'ca-pub-7810798546990694';
 const ADSENSE_SLOT_FROM_AD_CONSOLE = '4524971505';
 const ADSENSE_SLOT_FROM_ENV = (import.meta.env.VITE_ADSENSE_AD_SLOT as string | undefined)?.trim() ?? '';
 
-/** モバイル標準帯に近い高さ（IAB 50px 帯）。低いほど UI 占有が減る */
-const BANNER_CSS_PX = 50;
+/** モバイル下部バナー用の固定サイズ（IAB 系）。data-ad-format 省略で 400 になりにくい */
+const BANNER_W = 320;
+const BANNER_H = 50;
 
 function clampBannerHeightPx(raw: number): number {
-  if (!Number.isFinite(raw) || raw <= 0) return BANNER_CSS_PX;
-  return Math.min(BANNER_CSS_PX, Math.round(raw));
+  if (!Number.isFinite(raw) || raw <= 0) return BANNER_H;
+  return Math.min(BANNER_H, Math.round(raw));
 }
 
 const AdSpace: React.FC<AdSpaceProps> = ({
@@ -55,8 +56,8 @@ const AdSpace: React.FC<AdSpaceProps> = ({
   const adClipBoxStyle = useMemo(
     () =>
       ({
-        height: BANNER_CSS_PX,
-        maxHeight: BANNER_CSS_PX,
+        height: BANNER_H,
+        maxHeight: BANNER_H,
         transform: 'translateZ(0)',
         overflow: 'hidden',
       }) as const,
@@ -86,7 +87,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
     const shouldReserve = isVisible && placement === 'fixed';
     const setVar = (px: number) => {
       const v =
-        Number.isFinite(px) && px > 0 ? `${Math.round(px)}px` : shouldReserve ? `${BANNER_CSS_PX}px` : '0px';
+        Number.isFinite(px) && px > 0 ? `${Math.round(px)}px` : shouldReserve ? `${BANNER_H}px` : '0px';
       try {
         root.style.setProperty('--rk-bottom-banner', shouldReserve ? v : '0px');
       } catch {
@@ -98,11 +99,11 @@ const AdSpace: React.FC<AdSpaceProps> = ({
     const measure = () => {
       const el = containerRef.current;
       if (!el) {
-        setVar(shouldReserve ? BANNER_CSS_PX : 0);
+        setVar(shouldReserve ? BANNER_H : 0);
         return;
       }
       // AdSense が子 iframe を縦に膨らませると DOM 高さが画面半分になることがある。
-      // レイアウト予約（--rk-bottom-banner）と見た目の帯の高さは常に BANNER_CSS_PX 上限に固定する。
+      // レイアウト予約（--rk-bottom-banner）と見た目の帯の高さは常に BANNER_H 上限に固定する。
       const h = clampBannerHeightPx(el.getBoundingClientRect().height);
       setVar(h);
     };
@@ -149,8 +150,8 @@ const AdSpace: React.FC<AdSpaceProps> = ({
 
   const barMaxH =
     placement === 'fixed'
-      ? (`calc(${BANNER_CSS_PX}px + env(safe-area-inset-bottom))` as const)
-      : (`${BANNER_CSS_PX}px` as const);
+      ? (`calc(${BANNER_H}px + env(safe-area-inset-bottom))` as const)
+      : (`${BANNER_H}px` as const);
 
   const bar = (
     <div
@@ -158,7 +159,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
         placement === 'fixed'
           ? 'fixed bottom-0 left-0 right-0 z-[1200] w-full'
           : 'relative z-[20] w-full',
-        // 帯状: 本体 BANNER_CSS_PX + 下 safe-area（見た目）。--rk-bottom-banner は内側のみ計測（AppLayout と二重に safe-area しない）
+        // 帯状: 本体 BANNER_H + 下 safe-area（見た目）。--rk-bottom-banner は内側のみ計測（AppLayout と二重に safe-area しない）
         `bg-[#1A1A1A] border-t border-white/5 overflow-hidden pb-[env(safe-area-inset-bottom)]`,
         `flex flex-col items-stretch justify-end gap-0 px-0`,
         className,
@@ -168,7 +169,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
       style={
         placement === 'fixed'
           ? { maxHeight: barMaxH }
-          : { minHeight: BANNER_CSS_PX, maxHeight: barMaxH }
+          : { minHeight: BANNER_H, maxHeight: barMaxH }
       }
       role="complementary"
       aria-label={language === 'ja' ? '広告' : 'Advertisement'}
@@ -176,27 +177,28 @@ const AdSpace: React.FC<AdSpaceProps> = ({
       <div
         ref={containerRef}
         className="flex min-h-0 w-full shrink-0 items-center justify-center gap-2 min-w-0 overflow-hidden px-2 sm:px-3 [contain:layout]"
-        style={{ height: BANNER_CSS_PX, maxHeight: BANNER_CSS_PX }}
+        style={{ height: BANNER_H, maxHeight: BANNER_H }}
       >
         <span className="bg-[#333333] text-white text-[10px] px-2 py-0.5 rounded border border-white/10 font-bold shrink-0">
           AD
         </span>
         {enabled && !loadError ? (
-          <div className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[50px] [&_iframe]:!max-w-full" style={adClipBoxStyle}>
+          <div
+            className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[50px] [&_iframe]:!max-w-[320px]"
+            style={adClipBoxStyle}
+          >
             <ins
-              className="adsbygoogle block w-full max-w-full overflow-hidden"
+              className="adsbygoogle overflow-hidden"
               style={{
-                display: 'block',
-                width: '100%',
+                display: 'inline-block',
+                width: `${BANNER_W}px`,
+                height: `${BANNER_H}px`,
                 maxWidth: '100%',
-                height: BANNER_CSS_PX,
-                maxHeight: BANNER_CSS_PX,
+                maxHeight: `${BANNER_H}px`,
                 overflow: 'hidden',
               }}
               data-ad-client={ADSENSE_CLIENT}
               data-ad-slot={adSlot}
-              data-ad-format="horizontal"
-              data-full-width-responsive="false"
             />
           </div>
         ) : (
