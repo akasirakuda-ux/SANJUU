@@ -172,8 +172,8 @@ const GlobalOverlays: React.FC<GlobalOverlaysProps> = ({
         </div>
       )}
       
-      {/* body 直下ポータルでビューポート最下部の帯に固定（連絡帳オーバーの上に重ねる） */}
-      {isAdVisible && !streamMode && !(isMultiplay && screen === 'game') && (
+      {/* 連絡帳は z-[200] のため、広告 z-[1200] が前面に出ると送信欄が隠れる。掲示板表示中はバナーを出さない。 */}
+      {isAdVisible && !streamMode && !(isMultiplay && screen === 'game') && !showRenrakucho && (
         <AdSpace
           isVisible={isAdVisible}
           onHide={() => setIsAdVisible(false)}

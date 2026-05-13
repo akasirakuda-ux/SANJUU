@@ -20,8 +20,8 @@ const ADSENSE_CLIENT = 'ca-pub-7810798546990694';
 const ADSENSE_SLOT_FROM_AD_CONSOLE = '4524971505';
 const ADSENSE_SLOT_FROM_ENV = (import.meta.env.VITE_ADSENSE_AD_SLOT as string | undefined)?.trim() ?? '';
 
-/** リクエストが h≈90 になることが多いため、枠を 90px に揃えて 400（不正リクエスト）を減らす */
-const BANNER_CSS_PX = 90;
+/** モバイル標準帯に近い高さ（IAB 50px 帯）。低いほど UI 占有が減る */
+const BANNER_CSS_PX = 50;
 
 function clampBannerHeightPx(raw: number): number {
   if (!Number.isFinite(raw) || raw <= 0) return BANNER_CSS_PX;
@@ -51,7 +51,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
   const [loadError, setLoadError] = useState(false);
 
   // AdSense が iframe を position:fixed で大きく描くと、overflow だけでは親外に見える。
-  // transform がある祖先は fixed の包含ブロックになるため、90px 内に閉じ込める。
+  // transform がある祖先は fixed の包含ブロックになるため、帯の高さ内に閉じ込める。
   const adClipBoxStyle = useMemo(
     () =>
       ({
@@ -102,7 +102,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
         return;
       }
       // AdSense が子 iframe を縦に膨らませると DOM 高さが画面半分になることがある。
-      // レイアウト予約（--rk-bottom-banner）と見た目の帯の高さは常に 90px 上限に固定する。
+      // レイアウト予約（--rk-bottom-banner）と見た目の帯の高さは常に BANNER_CSS_PX 上限に固定する。
       const h = clampBannerHeightPx(el.getBoundingClientRect().height);
       setVar(h);
     };
@@ -147,38 +147,44 @@ const AdSpace: React.FC<AdSpaceProps> = ({
 
   if (!isVisible) return null;
 
+  const barMaxH =
+    placement === 'fixed'
+      ? (`calc(${BANNER_CSS_PX}px + env(safe-area-inset-bottom))` as const)
+      : (`${BANNER_CSS_PX}px` as const);
+
   const bar = (
     <div
       className={[
         placement === 'fixed'
-          ? 'fixed bottom-0 left-0 right-0 z-[1200] w-full max-h-[calc(90px+env(safe-area-inset-bottom))]'
-          : 'relative z-[20] w-full max-h-[90px]',
-        // 帯状: 本体 90px + 下 safe-area（見た目）。--rk-bottom-banner は内側 90px のみ計測（AppLayout と二重に safe-area しない）
+          ? 'fixed bottom-0 left-0 right-0 z-[1200] w-full'
+          : 'relative z-[20] w-full',
+        // 帯状: 本体 BANNER_CSS_PX + 下 safe-area（見た目）。--rk-bottom-banner は内側のみ計測（AppLayout と二重に safe-area しない）
         `bg-[#1A1A1A] border-t border-white/5 overflow-hidden pb-[env(safe-area-inset-bottom)]`,
         `flex flex-col items-stretch justify-end gap-0 px-0`,
         className,
       ]
         .filter(Boolean)
         .join(' ')}
-      style={placement === 'fixed' ? undefined : { minHeight: BANNER_CSS_PX }}
+      style={
+        placement === 'fixed'
+          ? { maxHeight: barMaxH }
+          : { minHeight: BANNER_CSS_PX, maxHeight: barMaxH }
+      }
       role="complementary"
       aria-label={language === 'ja' ? '広告' : 'Advertisement'}
     >
       <div
         ref={containerRef}
-        className="flex h-[90px] min-h-0 max-h-[90px] w-full shrink-0 items-center justify-center gap-3 min-w-0 overflow-hidden px-3 sm:px-4 [contain:layout]"
+        className="flex min-h-0 w-full shrink-0 items-center justify-center gap-2 min-w-0 overflow-hidden px-2 sm:px-3 [contain:layout]"
         style={{ height: BANNER_CSS_PX, maxHeight: BANNER_CSS_PX }}
       >
         <span className="bg-[#333333] text-white text-[10px] px-2 py-0.5 rounded border border-white/10 font-bold shrink-0">
           AD
         </span>
         {enabled && !loadError ? (
-          <div
-            className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[90px] [&_iframe]:!max-w-full"
-            style={adClipBoxStyle}
-          >
+          <div className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[50px] [&_iframe]:!max-w-full" style={adClipBoxStyle}>
             <ins
-              className="adsbygoogle block w-full max-w-full !max-h-[90px] overflow-hidden"
+              className="adsbygoogle block w-full max-w-full overflow-hidden"
               style={{
                 display: 'block',
                 width: '100%',
