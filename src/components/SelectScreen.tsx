@@ -18,7 +18,6 @@ interface SelectScreenProps {
   addOns?: import('../types').AddOnModule[];
   onBack: () => void;
   language: 'ja';
-  totalPoints: number;
   seed?: string;
   onClearSeed?: () => void;
   isMultiplay?: boolean;
@@ -45,7 +44,7 @@ interface SelectScreenProps {
 
 const SelectScreen: React.FC<SelectScreenProps> = ({ 
   difficulty, onSetDifficulty, onSelectProblem,
-  categories, addOns = [], onBack, language, totalPoints,
+  categories, addOns = [], onBack, language,
   seed = '', onClearSeed, isMultiplay = false, 
   isSyncMode = false, onSetSyncMode,
   nickname = '',
@@ -371,13 +370,6 @@ const SelectScreen: React.FC<SelectScreenProps> = ({
           </div>
         </div>
 
-        {/* Points: Right edge at 97% (3% from right) */}
-        <div className="absolute top-0 right-[3%] h-full flex items-center">
-          <div className="bg-white border-2 border-amber-100 rounded-2xl px-3 md:px-4 h-8 md:h-9 shadow-lg flex items-center gap-1 md:gap-2 animate-scale-in whitespace-nowrap">
-            <span className="text-base md:text-lg leading-none">🐫</span>
-            <span className="font-black text-amber-600 text-xs md:text-base tabular-nums leading-none">{totalPoints.toLocaleString()}</span>
-          </div>
-        </div>
       </div>
 
       {/* 2. Difficulty Area: Centered between 10% and 20% lines (at 15%), 8% height */}

@@ -6,12 +6,12 @@ import AppHeader from './components/AppHeader';
 import { useAppShell } from './hooks/useAppShell';
 
 const App: React.FC = () => {
-  const { appLayoutProps, appRouterProps, isBanned, banUserName } = useAppShell();
+  const { appLayoutProps, appRouterProps, headerProps, isBanned, banUserName } = useAppShell();
 
   return (
     <ErrorBoundary>
       <AppLayout {...appLayoutProps}>
-        <AppHeader />
+        <AppHeader {...headerProps} />
         {isBanned ? (
           <div className="flex-1 min-h-0 flex items-center justify-center p-6">
             <div className="w-full max-w-md rounded-2xl border-4 border-red-800 bg-red-50 p-6 shadow-xl">

@@ -21,7 +21,9 @@ const MainContainer: React.FC<{
           <ActiveUsersList activeUsers={activeUsers} />
         </div>
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col px-4 pb-[env(safe-area-inset-bottom)]">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-[calc(env(safe-area-inset-bottom)+var(--rk-bottom-banner,0px))]">
+        {children}
+      </div>
     </main>
   );
 };

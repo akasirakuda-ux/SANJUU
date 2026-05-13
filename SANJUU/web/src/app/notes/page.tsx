@@ -102,7 +102,7 @@ export default function NotesPage() {
   return (
     <div className={styles.page}>
       <p className={styles.back}>
-        <Link href="/">← SANJUU トップ</Link>
+        <Link href="/sanjuu">← SANJUU トップ</Link>
       </p>
       <SanjuuBrandHeading as="h1" />
       <h2 className={styles.h1}>連絡帳</h2>

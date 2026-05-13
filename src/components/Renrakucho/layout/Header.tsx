@@ -6,7 +6,9 @@ import { pageTopHeadingClass } from '../../../ui/typography';
 const Header: React.FC<{
   onBack: () => void;
   variant?: 'default' | 'hundred';
-}> = ({ onBack, variant = 'default' }) => {
+  /** 未指定時は従来どおり「みんなであそぶ（掲示板）」（例: `/keijiban` では「掲示板」） */
+  title?: string;
+}> = ({ onBack, variant = 'default', title }) => {
   const isHundred = variant === 'hundred';
   const isStreamMode = useMemo(() => {
     try {
@@ -47,7 +49,7 @@ const Header: React.FC<{
         <span className="text-base leading-none shrink-0" aria-hidden>
           📝
         </span>
-        <span className="truncate">みんなであそぶ（掲示板）</span>
+        <span className="truncate">{title ?? 'みんなであそぶ（掲示板）'}</span>
         {isStreamMode ? (
           <span
             className={

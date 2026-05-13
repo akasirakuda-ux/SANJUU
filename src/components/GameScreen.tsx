@@ -44,16 +44,13 @@ interface GameScreenProps {
   onBackToBoard?: () => void | Promise<void>;
   showToast: (msg: string) => void;
   onSaveHistory: (log: LogEntry) => void;
-  onSpendPoints: (amount: number) => void;
   onShowFullScreenAd: (count: number) => void;
   vibrate: (pattern?: number | number[]) => void;
   language: 'ja';
-  totalPoints: number;
   isOnline: boolean;
   onClear: () => void;
   onClearSeed: () => void;
   userId: string;
-  onAddPoints: (amount: number, reason: string) => void;
   onNextProblem: () => void;
   seed: string;
   proCode?: string;
@@ -104,17 +101,8 @@ const FLY_BANNER_MEASURE_STYLE: React.CSSProperties = {
   textShadow: '0 10px 0 rgba(255,255,255,0.85)',
 };
 
-const getClearPoints = (size: number) => {
-  // 難易度（サイズ）に応じた固定得点
-  if (size <= 5) return 50;
-  if (size <= 8) return 100;
-  if (size <= 10) return 150;
-  if (size <= 12) return 200;
-  return 300;
-};
-
 const GameScreen: React.FC<GameScreenProps> = ({ 
-  gameState, onUpdateFound, onBack, onBackToBoard, onSaveHistory, onSpendPoints, onShowFullScreenAd, showToast, vibrate, language, totalPoints, isOnline, onClear, onClearSeed, userId, onAddPoints, onNextProblem, seed, proCode, nickname, isMultiplay = false, isSyncMode = false, roomId = null, shareRoomId = null, roomStartTime = null, consecutiveClears, roomPlayers = [],
+  gameState, onUpdateFound, onBack, onBackToBoard, onSaveHistory, onShowFullScreenAd, showToast, vibrate, language, isOnline, onClear, onClearSeed, userId, onNextProblem, seed, proCode, nickname, isMultiplay = false, isSyncMode = false, roomId = null, shareRoomId = null, roomStartTime = null, consecutiveClears, roomPlayers = [],
   roomStatus = 'playing', onBackToTitle,
   userEmoji = '🐫',
   hundredCoop = false,
@@ -130,7 +118,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
     categoryLabel: '分類：',
     answersLabel: '回答数：',
     timeLabel: 'じかん：',
-    pointsLabel: 'ポイント：',
     difficultyLabel: 'むつかしさ：',
     dateLabel: 'ひづけ：',
     userIdLabel: 'ID：',
@@ -146,8 +133,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
     sec: '秒',
     min: '分',
     hint: 'ヒント',
-    hintDesc: '5ポイントで1文字目を表示',
-    noPoints: 'ポイントが足りません',
     submitToTeacher: 'らくだ先生に提出する',
     shareWithSeed: (seed: string) => seed ? `合言葉「${seed}」でクリア！` : 'クリアしたよ！',
   };
@@ -210,13 +195,9 @@ const GameScreen: React.FC<GameScreenProps> = ({
   useEffect(() => {
     hintWordRef.current = hintWord;
   }, [hintWord]);
-  const [sessionPoints, setSessionPoints] = useState(0);
-  const sessionPointsRef = useRef(sessionPoints);
-  sessionPointsRef.current = sessionPoints;
   const consecutiveClearsRef = useRef(consecutiveClears);
   consecutiveClearsRef.current = consecutiveClears;
   const [streakCount, setStreakCount] = useState(0);
-  const [lastGainedPoints, setLastGainedPoints] = useState(0);
   const [showLastOneBonus, setShowLastOneBonus] = useState(false);
   const [showClearFlyBonus, setShowClearFlyBonus] = useState(false);
   const lastFlyMeasureRef = useRef<HTMLSpanElement>(null);
@@ -298,9 +279,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     setIsFinished(false);
     setShowAnswers(false);
     setIsSuccessFlashing(false);
-    setSessionPoints(0);
     setStreakCount(0);
-    setLastGainedPoints(0);
     setShowLastOneBonus(false);
     setShowClearFlyBonus(false);
     setFinishedPlayers(new Set());
@@ -499,9 +478,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
     // 読みやすさのため12文字の16進数にする
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 12).toUpperCase();
   };
-
-  const HINT_COST = 25;
-  const SHOW_ANSWERS_COST = 50;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1102,14 +1078,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
           }
         }
 
-        const isLastWord = safeFoundCount === totalCount - 1;
-        // 「すべてのこたえ」表示中はポイント獲得なし
-        const pointsEarned = isLastWord && !showAnswers ? getClearPoints(gameState.difficulty) : 0;
-
-        if (pointsEarned > 0) {
-          setSessionPoints((p) => p + pointsEarned);
-        }
-        setLastGainedPoints(pointsEarned);
         setStreakCount((s) => s + 1);
         onUpdateFound(pw.word, occ.start, occ.end);
         audioService.playCorrectSound();
@@ -1155,10 +1123,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
               return;
             }
           }
-          const isLastWord = safeFoundCount === totalCount - 1;
-          const pointsEarned = isLastWord && !showAnswers ? getClearPoints(gameState.difficulty) : 0;
-          if (pointsEarned > 0) setSessionPoints((p) => p + pointsEarned);
-          setLastGainedPoints(pointsEarned);
           setStreakCount((s) => s + 1);
           onUpdateFound(pw.word, sel.start, sel.end);
           audioService.playCorrectSound();
@@ -1167,7 +1131,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
     selectionRef.current = { start: null, end: null };
     setActiveSelection({ start: null, end: null });
-  }, [gameState, layout, streakCount, lastGainedPoints, onUpdateFound, safeFoundCount, totalCount, showAnswers]);
+  }, [gameState, layout, streakCount, onUpdateFound, safeFoundCount, totalCount, showAnswers]);
 
   useEffect(() => {
     window.addEventListener('pointermove', handlePointerMove);
@@ -1243,7 +1207,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
           foundCount: safeFoundCount, 
           totalCount: totalCount, 
           duration: durStr, 
-          points: sessionPointsRef.current 
         },
         category: gs.category // Add category object for App.tsx fallback
       });
@@ -1255,11 +1218,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
   }, [safeFoundCount, totalCount, isFinished]);
 
   const handleHint = () => {
-    if (totalPoints < HINT_COST) {
-      showToast(t.noPoints);
-      return;
-    }
-
     const unfoundOccurrences: { word: string; start: Point; end: Point }[] = [];
     gameState.placedWords.forEach(pw => {
       pw.occurrences.forEach(occ => {
@@ -1297,14 +1255,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
         return;
       }
       const randomOcc = primaryPool[Math.floor(Math.random() * primaryPool.length)];
-      onSpendPoints(HINT_COST);
       vibrate(30);
       setHintWord({ ...randomOcc, startTime: Date.now() });
       setTimeout(() => setHintWord(null), 5000);
       return;
     }
     const randomOcc = unfoundOccurrences[Math.floor(Math.random() * unfoundOccurrences.length)];
-    onSpendPoints(HINT_COST);
     vibrate(30);
     setHintWord({ ...randomOcc, startTime: Date.now() });
     setTimeout(() => setHintWord(null), 5000);
@@ -1313,11 +1269,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const handleShowAnswers = () => {
     if (hundredCoop) return; // みんなであそぶでは不要
     if (showAnswers) return;
-    if (totalPoints < SHOW_ANSWERS_COST) {
-      showToast(t.noPoints);
-      return;
-    }
-    onSpendPoints(SHOW_ANSWERS_COST);
     setShowAnswers(true);
     vibrate(10);
   };
@@ -1564,14 +1515,13 @@ const GameScreen: React.FC<GameScreenProps> = ({
                   { label: t.difficultyLabel, value: `${gameState.difficulty}×${gameState.difficulty}` },
                   { label: 'こたえの数：', value: `${totalCount}個` },
                   { label: t.timeLabel, value: clearTime },
-                  { label: t.pointsLabel, value: `🐫${sessionPoints}`, isGreen: true },
                 ].map((item, idx) => (
                   <div 
                     key={idx} 
                     className="flex justify-between border-b border-slate-50 pb-1 w-full"
                   >
                     <span className="text-slate-400 whitespace-nowrap">{item.label}</span>
-                    <span className={`${item.isTruncate ? 'truncate ml-4' : ''} ${item.isGreen ? 'text-[#00c874]' : ''}`}>
+                    <span className={`${item.isTruncate ? 'truncate ml-4' : ''}`}>
                       {item.value}
                     </span>
                   </div>
@@ -1664,7 +1614,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     
                     const categoryTitle = getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana);
                     const difficultyText = `${gameState.difficulty}×${gameState.difficulty}`;
-                    const pointsText = String(totalPoints + sessionPoints);
+                    const pointsText = `${safeFoundCount}/${totalCount}`;
                     const nameText = nickname || userId;
                     const seedText = seed || "なし";
 
@@ -1846,14 +1796,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
                       `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
                       `じかん: ${clearTime}\n` +
-                      `ポイント: 🐫${sessionPoints}\n` +
                       `見つけた言葉:\n${foundWordsList}${contributorText}\n\n` +
                       `${getPublicUrl()}\n#ことば探し #WORDSEARCH`;
 
                     try {
                       await navigator.clipboard.writeText(shareText);
                       showToast(language === 'ja' ? '結果をコピーしました！' : 'Copied to clipboard!');
-                      onAddPoints(50, language === 'ja' ? 'SNSシェア' : 'SNS Share');
                     } catch (e) {
                       console.error('Copy failed', e);
                     }
@@ -1899,7 +1847,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
                       `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
                       `じかん: ${clearTime}\n` +
-                      `ポイント: 🐫${sessionPoints}\n` +
                       (displaySeed ? `合言葉: ${displaySeed}\n` : '') +
                       `見つけた言葉:\n${foundWordsList}${contributorText}\n\n` +
                       `${getPublicUrl()}\n#ことば探し #WORDSEARCH`;
@@ -1923,13 +1870,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       }
                       try { 
                         await navigator.share(shareData); 
-                        onAddPoints(50, language === 'ja' ? 'SNSシェア' : 'SNS Share');
                       } catch (e) {
                         if (shareData.files) {
                           try {
                             const { files: _, ...textShareData } = shareData;
                             await navigator.share(textShareData);
-                            onAddPoints(50, language === 'ja' ? 'SNSシェア' : 'SNS Share');
                           } catch (e2) {}
                         }
                       }
@@ -1937,7 +1882,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       try {
                         await navigator.clipboard.writeText(shareText);
                         showToast(language === 'ja' ? '結果をコピーしました！' : 'Copied to clipboard!');
-                        onAddPoints(50, language === 'ja' ? 'SNSシェア' : 'SNS Share');
                       } catch (e) {}
                     }
                   }} 
@@ -2044,10 +1988,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
             </div>
           </div>
 
-            <div className={`bg-white border border-slate-200 rounded-xl shadow-sm flex items-center gap-2 flex-shrink-0 ${hundredCoop ? 'p-2 h-9 md:h-11' : 'p-3 h-10 md:h-14'}`}>
-              <span className="text-sm leading-none">🐫</span>
-              <span className="font-medium text-slate-700 text-sm tabular-nums leading-none">{totalPoints.toLocaleString()}</span>
-            </div>
         </div>
         <div className="h-1.5 w-full bg-slate-200/50 rounded-xl overflow-hidden border border-slate-200 mt-1">
           <div className="h-full bg-emerald-200 transition-all duration-500" style={{ width: `${progress}%` }} />
@@ -2154,12 +2094,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
         >
           <button
             onClick={handleHint}
-            disabled={totalPoints < HINT_COST}
-            className={`bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4
-              ${totalPoints < HINT_COST ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
+            className="bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4"
             style={{ width: layout.boardSize || 'auto' }}
           >
-            <span className="text-sm">☝️🐫-{HINT_COST}</span>
+            <span className="text-sm">☝️{t.hint}</span>
           </button>
         </div>
       )}
@@ -2175,12 +2113,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
         >
           <button
             onClick={handleHint}
-            disabled={totalPoints < HINT_COST}
-            className={`bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4
-              ${totalPoints < HINT_COST ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
+            className="bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4"
             style={{ width: layout.boardSize || 'auto' }}
           >
-            <span className="text-sm">☝️🐫-{HINT_COST}</span>
+            <span className="text-sm">☝️{t.hint}</span>
           </button>
 
           <div
@@ -2198,7 +2134,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                   }}
                   className="w-full flex items-center justify-center gap-2 font-black text-sm active:scale-95 transition-transform px-3 py-4"
                 >
-                  <span>🔍🐫-{SHOW_ANSWERS_COST}</span>
+                  <span>🔍</span>
                   <span className="text-sm font-black">{t.showAnswers}</span>
                 </button>
               ) : (

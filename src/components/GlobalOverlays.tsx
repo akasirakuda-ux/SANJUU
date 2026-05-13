@@ -41,7 +41,6 @@ interface GlobalOverlaysProps {
   onJoinRoom?: (roomId: string) => void;
   onStartHundred: (roomId: string) => void;
   ensureAuth: () => Promise<void>;
-  onNavigateToSelectWithRenrakucho: () => void;
   renrakuchoMountKey: number;
   renrakuchoInitialActiveTab?: 'post' | 'public' | 'admin';
   renrakuchoInitialPublicScreen?: RenrakuchoPublicScreenState;
@@ -77,7 +76,6 @@ const GlobalOverlays: React.FC<GlobalOverlaysProps> = ({
   onJoinRoom,
   onStartHundred,
   ensureAuth,
-  onNavigateToSelectWithRenrakucho,
   renrakuchoMountKey,
   renrakuchoInitialActiveTab,
   renrakuchoInitialPublicScreen,
@@ -131,7 +129,6 @@ const GlobalOverlays: React.FC<GlobalOverlaysProps> = ({
           onJoinRoom={onJoinRoom}
           onStartHundred={onStartHundred}
           ensureAuth={ensureAuth}
-          onNavigateToSelectWithRenrakucho={onNavigateToSelectWithRenrakucho}
           initialActiveTab={renrakuchoInitialActiveTab}
           initialPublicScreen={renrakuchoInitialPublicScreen}
           isAdVisible={isAdVisible}
@@ -175,11 +172,8 @@ const GlobalOverlays: React.FC<GlobalOverlaysProps> = ({
         </div>
       )}
       
-      {/* 連絡帳オーバーレイ表示中は全画面下にバナーを重ねず、連絡帳メイン内に任せる（かんりタブでは非表示） */}
-      {isAdVisible &&
-        !showRenrakucho &&
-        !streamMode &&
-        !(isMultiplay && screen === 'game') && (
+      {/* body 直下ポータルでビューポート最下部の帯に固定（連絡帳オーバーの上に重ねる） */}
+      {isAdVisible && !streamMode && !(isMultiplay && screen === 'game') && (
         <AdSpace
           isVisible={isAdVisible}
           onHide={() => setIsAdVisible(false)}

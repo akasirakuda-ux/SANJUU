@@ -101,7 +101,6 @@ export enum OperationType {
 export type RenrakuchoPublicScreenState =
   | 'list'
   | 'closed'
-  | 'hundred-create'
   | 'hundred-detail'
   | 'hundred-wait'
   | 'hundred-board';

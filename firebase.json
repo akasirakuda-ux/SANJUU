@@ -25,7 +25,89 @@
         ]
       }
     ],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+    "rewrites": [
+      {
+        "source": "/_next/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/icon.svg",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/rakuda-profile",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/room",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/play/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/dev/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/admin/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/ads",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/ads/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/bulletin-pins",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/bulletin-pins/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/world",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/world/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/notes",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/notes/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/play",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/play/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/r/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/sanjuu",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/sanjuu/**",
+        "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      { "source": "**", "destination": "/index.html" }
+    ]
   }
 }
 

@@ -8,6 +8,8 @@
     "dev:sanjuu": "node scripts/dev-sanjuu-only.mjs",
     "dev:rakuda": "vite",
     "build": "vite build",
+    "verify:hosting-dist": "node scripts/verify-hosting-dist.mjs",
+    "deploy:hosting": "vite build && node scripts/verify-hosting-dist.mjs && firebase deploy --only hosting",
     "start": "node server.mjs",
     "preview": "vite preview",
     "lint": "tsc --noEmit",

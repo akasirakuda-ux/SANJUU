@@ -5,19 +5,28 @@ import GameScreen from './GameScreen';
 import QuietRoom from './QuietRoom';
 import SeatSelection from '../pages/SeatSelection';
 import WorldsWish from './WorldsWish';
-import Entrance from './Entrance';
 import GameNarrator from './GameNarrator';
 import { MASTER } from '../constants';
 import { vibrate } from '../lib/utils';
 import { audioService } from '../services/audioService';
 import type { UserAccount } from '../types';
 
+/** 掲示板系 URL または連絡帳オーバーを開いている間は席画面の募集ポーリングを止める（不要な 404 を避ける） */
+function shouldSuppressSanjuuRoomPoll(showRenrakucho: boolean): boolean {
+  if (showRenrakucho) return true;
+  if (typeof window === 'undefined') return false;
+  const pathNorm = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+  return (
+    pathNorm === '/keijiban' ||
+    pathNorm.endsWith('/keijiban') ||
+    pathNorm === '/hundred' ||
+    pathNorm.endsWith('/hundred')
+  );
+}
+
 interface AppRouterProps {
   screen: any;
   setScreen: (s: any) => void;
-  isEntered: boolean;
-  setIsEntered: (e: boolean) => void;
-  onEnter: () => void;
   nickname: string;
   setNickname: (n: string) => void;
   language: 'ja';
@@ -61,11 +70,9 @@ interface AppRouterProps {
   roomStatus: 'waiting' | 'start' | 'playing' | 'finished';
   gameState: any;
   handleSaveHistory: (data: any) => void;
-  spendPoints: (p: number) => void;
   isOnline: boolean;
   handleShowFullScreenAd: () => void;
   handleClear: () => void;
-  handleAddPointsWithNotification: (p: number) => void;
   narration: string;
   difficulty: number;
   setDifficulty: (d: number) => void;
@@ -98,6 +105,8 @@ interface AppRouterProps {
   createAccount: () => string;
   /** 配信モード（軽量化） */
   streamMode?: boolean;
+  /** 連絡帳オーバーを表示中（席画面が裏に残っていても募集 API を叩かない） */
+  showRenrakucho?: boolean;
 }
 
 const AppRouter: React.FC<AppRouterProps> = ({
@@ -149,11 +158,9 @@ const AppRouter: React.FC<AppRouterProps> = ({
   roomStatus,
   gameState,
   handleSaveHistory,
-  spendPoints,
   isOnline,
   handleShowFullScreenAd,
   handleClear,
-  handleAddPointsWithNotification,
   narration,
   difficulty,
   setDifficulty,
@@ -182,8 +189,10 @@ const AppRouter: React.FC<AppRouterProps> = ({
   switchAccount,
   createAccount,
   streamMode = false,
+  showRenrakucho = false,
 }) => {
   const [quietSkipIntro, setQuietSkipIntro] = useState(false);
+  const suppressSanjuuRoomPoll = shouldSuppressSanjuuRoomPoll(showRenrakucho);
   const handleBackToTitle = useCallback(() => {
     vibrate(10);
     setClearsCount(0);
@@ -199,10 +208,6 @@ const AppRouter: React.FC<AppRouterProps> = ({
 
   return (
     <>
-      {screen === 'entrance' && (
-        <Entrance onEnter={onEnter} />
-      )}
-
       {screen === 'seat-selection' && (
         <SeatSelection 
           onSelectWindow={() => {
@@ -230,12 +235,12 @@ const AppRouter: React.FC<AppRouterProps> = ({
           firebaseUser={firebaseUser}
           hasActiveRecruitments={hasActiveRecruitments}
           renrakuchoHasUnread={renrakuchoHasUnread}
+          suppressSanjuuRoomPoll={suppressSanjuuRoomPoll}
           viewerCount={viewerCount}
           nickname={nickname}
           setNickname={setNickname}
           userEmoji={userEmoji}
           setUserEmoji={setUserEmoji}
-          totalPoints={user.totalPoints || 0}
           accounts={accounts}
           activeUserId={activeUserId}
           switchAccount={switchAccount}
@@ -284,7 +289,6 @@ const AppRouter: React.FC<AppRouterProps> = ({
           addOns={user.addOns}
           onBack={handleBackToTitle}
           language={language} 
-          totalPoints={user.totalPoints}
           seed={seed}
           onClearSeed={() => {
             setSeed('');
@@ -334,10 +338,8 @@ const AppRouter: React.FC<AppRouterProps> = ({
           onBackToTitle={handleBackToTitle}
           showToast={setNotification} 
           onSaveHistory={handleSaveHistory} 
-          onSpendPoints={spendPoints}
           vibrate={vibrate}
           language={language} 
-          totalPoints={user.totalPoints}
           isOnline={isOnline}
           onShowFullScreenAd={handleShowFullScreenAd}
           onClear={handleClear}
@@ -346,7 +348,6 @@ const AppRouter: React.FC<AppRouterProps> = ({
             setRoomId(null);
           }}
           userId={user.user_id}
-          onAddPoints={handleAddPointsWithNotification}
           onNextProblem={() => {
             // みんなであそぶ（hundred_rooms）中は「次の問題」でソロ盤面を生成すると、
             // hundred_rooms の購読が上書きして前の foundWords が復活し「全てのこたえ」が帯付きになる事故が起きる。

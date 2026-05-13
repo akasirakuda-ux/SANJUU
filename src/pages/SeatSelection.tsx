@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Heart, Moon } from 'lucide-react';
 import KotobaLogo from '../components/KotobaLogo';
+import { RAKUDA_PROFILE_SETTINGS_ANCHOR_ID } from '../components/AppHeader';
 import ModeEntryLayout from '../components/ModeEntryLayout';
 import QRCode from 'qrcode';
 
@@ -11,9 +12,9 @@ import type { UserAccount } from '../types';
 import { auth } from '../firebase';
 import { isRenrakuAdmin } from '../lib/renrakuAdmin';
 import {
-  sanjuuBulletinBoardUrl,
+  appendRakudaProfileQuery,
+  rakudaCommunityBulletinUrl,
   sanjuuTopUrlWithRakudaProfile,
-  sanjuuWebOrigin,
 } from '../lib/sanjuuWebOrigin';
 import { vibrate } from '../lib/utils';
 
@@ -30,12 +31,13 @@ interface SeatSelectionProps {
   hasActiveRecruitments?: boolean;
   /** 連絡帳に未読（最終閲覧より新しい投稿） */
   renrakuchoHasUnread?: boolean;
+  /** 掲示板 URL や連絡帳オーバー中は `/api/play/rooms` を叩かない */
+  suppressSanjuuRoomPoll?: boolean;
   viewerCount?: number;
   nickname: string;
   setNickname: (name: string) => void;
   userEmoji: string;
   setUserEmoji: (emoji: string) => void;
-  totalPoints: number;
   accounts: UserAccount[];
   activeUserId: string;
   switchAccount: (userId: string) => void;
@@ -55,18 +57,24 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
   isOnline,
   onGoogleLogin,
   firebaseUser,
-  hasActiveRecruitments,
+  hasActiveRecruitments: _hasActiveRecruitments,
   renrakuchoHasUnread = false,
+  suppressSanjuuRoomPoll = false,
   viewerCount,
   nickname,
   setNickname,
   userEmoji,
   setUserEmoji,
-  totalPoints,
+  accounts,
+  activeUserId,
+  switchAccount,
+  createAccount,
 }) => {
   const [showRegisteredMessage, setShowRegisteredMessage] = useState(false);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  /** 三十エンジン上で未開始の募集ルームがあるか（`/api/play/rooms`） */
+  const [sanjuuRecruitOpen, setSanjuuRecruitOpen] = useState(false);
 
   const LOGIN_PROMPT_DISMISSED_KEY = 'rk_login_prompt_dismissed_v1';
 
@@ -198,6 +206,57 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    if (suppressSanjuuRoomPoll) {
+      setSanjuuRecruitOpen(false);
+      return () => {};
+    }
+    let cancelled = false;
+    let intervalId = 0;
+    let consecutiveFailures = 0;
+    const tick = async () => {
+      try {
+        const r = await fetch('/api/play/rooms', { cache: 'no-store' });
+        if (cancelled) return;
+        if (!r.ok) {
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 3 && intervalId) {
+            window.clearInterval(intervalId);
+            intervalId = 0;
+          }
+          setSanjuuRecruitOpen(false);
+          return;
+        }
+        consecutiveFailures = 0;
+        const j: unknown = await r.json();
+        if (!Array.isArray(j) || cancelled) return;
+        let open = false;
+        for (const row of j) {
+          if (typeof row !== 'object' || !row) continue;
+          const rec = row as Record<string, unknown>;
+          if (rec.started === true) continue;
+          open = true;
+          break;
+        }
+        if (!cancelled) setSanjuuRecruitOpen(open);
+      } catch {
+        if (cancelled) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3 && intervalId) {
+          window.clearInterval(intervalId);
+          intervalId = 0;
+        }
+        setSanjuuRecruitOpen(false);
+      }
+    };
+    void tick();
+    intervalId = window.setInterval(() => void tick(), 20000);
+    return () => {
+      cancelled = true;
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, [suppressSanjuuRoomPoll]);
+
   const requireProfile = (action: () => void) => {
     if (hasProfile) {
       action();
@@ -320,7 +379,10 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
   );
 
   const profileBlock = (
-    <div className="w-full space-y-2 rounded-xl border-2 border-amber-400/75 bg-amber-50/98 shadow-md p-2.5 sm:p-3">
+    <div
+      id={RAKUDA_PROFILE_SETTINGS_ANCHOR_ID}
+      className="w-full space-y-2 rounded-xl border-2 border-amber-400/75 bg-amber-50/98 shadow-md p-2.5 sm:p-3 scroll-mt-[calc(env(safe-area-inset-top)+5.5rem)]"
+    >
       <p className="text-[10px] font-medium text-slate-600 text-left pl-0.5">絵文字・ニックネーム</p>
       <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
         <input
@@ -445,8 +507,11 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
               </div>
             }
             mainColumn={
-              <div className="flex flex-col gap-3 w-full max-w-md mx-auto items-stretch pb-3 overflow-visible">
-                {/* 1. ことば探しであそぶ */}
+              <nav
+                className="flex flex-col gap-3 w-full max-w-md mx-auto items-stretch pb-3 overflow-visible"
+                aria-label="メインメニュー（上から順：ことば探し、掲示板、３０募集一覧、３０の問題を作る、しゅっせき簿、しずかの間、広告の消去）"
+              >
+                {/* 1. ことば探し */}
                 <button
                   type="button"
                   className={`${hubBtn} bg-[#f6c7c7] border-[#5a3d28] text-[#3b2a18] shadow-md`}
@@ -463,35 +528,13 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   }}
                 >
                   <KotobaLogo size={22} />
-                  <span className="font-medium">ことば探しであそぶ</span>
+                  <span className="font-medium">ことば探し</span>
                 </button>
 
-                {/* 2. SANJUU トップへ → sanjuuWebOrigin()＝VITE_SANJUU_WEB_ORIGIN */}
+                {/* 2. 掲示板（みんなであそぶ）→ /keijiban（SPA で連絡帳オーバーレイ） */}
                 <button
                   type="button"
-                  aria-label="３０ SANJUU であそぶ"
-                  className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
-                  onClick={() => {
-                    vibrate(10);
-                    // クエリなしの三十トップのみ（rkEmoji 付き URL と混同しないよう明示的に除去）
-                    const root = sanjuuWebOrigin().replace(/\/+$/, '');
-                    const u = new URL(`${root}/`);
-                    u.search = '';
-                    u.hash = '';
-                    window.location.assign(u.href);
-                  }}
-                >
-                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
-                    <span className="text-[22px] xs:text-2xl font-black tabular-nums leading-none text-amber-950">
-                      30
-                    </span>
-                    <span className="text-[11px] xs:text-xs font-bold leading-none text-amber-950/90">SANJUUであそぶ</span>
-                  </span>
-                </button>
-
-                {/* 3. 掲示板 → 三十 `/sanjuu/bulletin`（開発例: http://localhost:3200/sanjuu/bulletin） */}
-                <button
-                  type="button"
+                  aria-label="掲示板"
                   className={`${hubBtn} bg-gradient-to-r from-violet-200 to-indigo-200 border-indigo-700/40 text-indigo-950 shadow-md`}
                   onClick={() => {
                     vibrate(10);
@@ -502,36 +545,71 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                         })
                       );
                     }
-                    window.location.assign(sanjuuBulletinBoardUrl());
+                    window.location.assign(rakudaCommunityBulletinUrl());
                   }}
                 >
                   <span className="text-lg leading-none">📋</span>
                   <span className="font-medium text-center leading-tight flex flex-col gap-0.5">
                     <span>掲示板</span>
-                    {hasActiveRecruitments ? (
-                      <span className="text-[10px] font-black text-indigo-800/90">募集中あり</span>
-                    ) : renrakuchoHasUnread ? (
+                    {renrakuchoHasUnread ? (
                       <span className="text-[10px] font-black text-indigo-800/90">未読あり</span>
                     ) : null}
                   </span>
                 </button>
 
-                {/* 4. SANJUU トップ（rkEmoji/rkNick 付き・募集向け） */}
+                {/* 3. 三十 募集一覧 → /sanjuu/recruit-board */}
                 <button
                   type="button"
-                  aria-label="３０用の募集掲示板"
+                  aria-label="３０募集一覧"
                   className={`${hubBtn} bg-gradient-to-r from-sky-200 to-cyan-200 border-sky-700/45 text-sky-950 shadow-md`}
                   onClick={() => {
                     vibrate(10);
-                    const url = sanjuuTopUrlWithRakudaProfile({ emoji: userEmoji, nickname });
-                    window.location.assign(url);
+                    if (!hasProfile) {
+                      window.dispatchEvent(
+                        new CustomEvent('SHOW_TOAST', {
+                          detail: '見ることはできます。表示名を三十に渡すには「絵文字・ニックネーム」を両方入れてください',
+                        })
+                      );
+                    }
+                    const u = new URL('/sanjuu/recruit-board', window.location.origin);
+                    appendRakudaProfileQuery(u, { emoji: userEmoji, nickname });
+                    window.location.assign(u.toString());
                   }}
                 >
                   <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
-                    <span className="text-[22px] xs:text-2xl font-black tabular-nums leading-none text-sky-950">
-                      30
-                    </span>
-                    <span className="text-[11px] xs:text-xs font-bold leading-none text-sky-950/90">募集掲示板</span>
+                    <span className="text-[15px] xs:text-base font-black leading-tight text-sky-950">３０募集一覧</span>
+                    {sanjuuRecruitOpen ? (
+                      <span className="text-[10px] font-black text-red-600">募集あり</span>
+                    ) : null}
+                  </span>
+                </button>
+
+                {/* 4. ３０の問題を作る（三十トップ `VITE_SANJUU_WEB_ORIGIN` + 任意で rkEmoji/rkNick） */}
+                <button
+                  type="button"
+                  aria-label="３０の問題を作る"
+                  className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
+                  onClick={() => {
+                    vibrate(10);
+                    const emoji = String(userEmoji ?? '').trim();
+                    const nick = String(nickname ?? '').trim();
+                    if (!emoji && !nick) {
+                      window.dispatchEvent(
+                        new CustomEvent('SHOW_TOAST', {
+                          detail: '絵文字・ニックネームを入力してから進んでね',
+                        })
+                      );
+                      setShowRegisteredMessage(true);
+                      setTimeout(() => setShowRegisteredMessage(false), 2500);
+                      return;
+                    }
+                    window.location.assign(
+                      sanjuuTopUrlWithRakudaProfile({ emoji: userEmoji, nickname })
+                    );
+                  }}
+                >
+                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
+                    <span className="text-[15px] xs:text-base font-black leading-tight text-amber-950">３０の問題を作る</span>
                   </span>
                 </button>
 
@@ -565,11 +643,10 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   <Heart className="w-5 h-5 shrink-0" />
                   <span className="font-medium">広告の消去（準備中）</span>
                 </button>
-              </div>
+              </nav>
             }
             footer={
               <div className="flex flex-col items-center gap-1 text-[10px] text-amber-950/80 font-medium">
-                <span>🐫 {totalPoints.toLocaleString()} pt</span>
                 <span>
                   &copy; 2026 らくだ珈琲 · v{import.meta.env.VITE_APP_VERSION}
                 </span>

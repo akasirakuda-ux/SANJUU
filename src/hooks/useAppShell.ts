@@ -31,12 +31,13 @@ import { computeStampsFromLogs, migrateStampArrays } from '../lib/stampMigration
 import { useRenrakuchoUnreadBadge } from './useRenrakuchoUnreadBadge';
 import AppRouter from '../components/AppRouter';
 import type { AppLayoutProps } from '../components/AppLayout';
+import type { AppHeaderProps } from '../components/AppHeader';
 import type { RenrakuchoPublicScreenState } from '../components/Renrakucho/types';
 
 const RENRAKU_RESUME_KEY = 'rk_renraku_resume';
 
 export const useAppShell = () => {
-  const [isEntered, setIsEntered] = useState(false);
+  const [isEntered, setIsEntered] = useState(true);
   const [notification, setNotification] = useState<string | null>(null);
   const language = 'ja';
 
@@ -48,8 +49,6 @@ export const useAppShell = () => {
     setNickname,
     userEmoji,
     setUserEmoji,
-    spendPoints,
-    addPoints,
     accounts,
     activeUserId,
     switchAccount,
@@ -157,7 +156,13 @@ export const useAppShell = () => {
   const setShowRenrakucho = useCallback((show: boolean) => {
     if (!show) {
       const p = window.location.pathname;
-      if (p === '/hundred' || p.endsWith('/hundred')) {
+      const pNorm = p.replace(/\/+$/, '') || '/';
+      if (
+        pNorm === '/hundred' ||
+        pNorm.endsWith('/hundred') ||
+        pNorm === '/keijiban' ||
+        pNorm.endsWith('/keijiban')
+      ) {
         window.history.replaceState(null, '', '/');
       }
     }
@@ -414,9 +419,9 @@ export const useAppShell = () => {
         const d = snap.data() as Record<string, unknown>;
         const n = typeof d.userName === 'string' ? d.userName.trim() : '';
         setBanUserName(n || null);
-        // Force back to entrance-like state so lingering UI doesn't keep running.
-        setIsEntered(false);
-        setScreen('entrance');
+        // Force back to hub so lingering game UI doesn't keep running.
+        setIsEntered(true);
+        setScreen('seat-selection');
         setShowRenrakucho(false);
       },
       (e) => {
@@ -558,12 +563,6 @@ export const useAppShell = () => {
     },
     [setIsSyncMode]
   );
-
-  const handleEnter = useCallback(() => {
-    vibrate(30);
-    setIsEntered(true);
-    setScreen(prev => (prev === 'entrance' ? 'seat-selection' : prev));
-  }, [setIsEntered, setScreen]);
 
   const handleConfirmJoin = useCallback(
     async (rid: string) => {
@@ -768,14 +767,6 @@ export const useAppShell = () => {
     handleRecordFinish();
   }, [handleRecordFinish]);
 
-  const handleAddPointsWithNotification = useCallback(
-    (p: number) => {
-      addPoints(p);
-      setNotification(language === 'ja' ? `ポイントを${p}獲得したよ！` : `Earned ${p} points!`);
-    },
-    [addPoints, language]
-  );
-
   const handleShowFullScreenAd = useCallback(async (count: number) => {
     if (streamMode) return;
     if (count > 0 && count % 3 === 0) {
@@ -812,9 +803,14 @@ export const useAppShell = () => {
 
   useEffect(() => {
     if (!isEntered) return;
-    if (screen === 'entrance') return;
     const path = window.location.pathname;
-    if (!(path === '/hundred' || path.endsWith('/hundred'))) return;
+    const pathNorm = path.replace(/\/+$/, '') || '/';
+    const openRenrakuFromPath =
+      pathNorm === '/hundred' ||
+      pathNorm.endsWith('/hundred') ||
+      pathNorm === '/keijiban' ||
+      pathNorm.endsWith('/keijiban');
+    if (!openRenrakuFromPath) return;
     if (showRenrakucho) return;
 
     let canceled = false;
@@ -837,7 +833,7 @@ export const useAppShell = () => {
 
   const appLayoutProps: AppLayoutProps = {
     // Ad banner is always present on normal screens; reserve space to avoid covering UI.
-    reserveBottomAdSpace: !streamMode && !showRenrakucho && !(isMultiplay && screen === 'game'),
+    reserveBottomAdSpace: !streamMode && !(isMultiplay && screen === 'game'),
     language,
     isGenerating,
     isMultiplay,
@@ -890,13 +886,6 @@ export const useAppShell = () => {
       setScreen('game');
     },
     ensureAuth,
-    onNavigateToSelectWithRenrakucho: () => {
-      setRenrakuchoInitialActiveTab(undefined);
-      setRenrakuchoInitialPublicScreen(undefined);
-      setRenrakuchoMountKey((k) => k + 1);
-      setScreen('select');
-      setShowRenrakucho(true);
-    },
     renrakuchoMountKey,
     renrakuchoInitialActiveTab,
     renrakuchoInitialPublicScreen,
@@ -906,9 +895,6 @@ export const useAppShell = () => {
   const appRouterProps: React.ComponentProps<typeof AppRouter> = {
     screen,
     setScreen,
-    isEntered,
-    setIsEntered,
-    onEnter: handleEnter,
     nickname,
     setNickname,
     language,
@@ -952,11 +938,9 @@ export const useAppShell = () => {
     roomStatus: roomStatus as any,
     gameState,
     handleSaveHistory,
-    spendPoints,
     isOnline,
     handleShowFullScreenAd,
     handleClear,
-    handleAddPointsWithNotification,
     narration,
     difficulty,
     setDifficulty,
@@ -985,6 +969,7 @@ export const useAppShell = () => {
     switchAccount,
     createAccount,
     streamMode,
+    showRenrakucho,
   };
 
   const statusProps = {
@@ -997,7 +982,11 @@ export const useAppShell = () => {
     onDismissFullScreenAd: () => setShowFullScreenAd(false),
   };
 
-  const headerProps = {};
+  const headerProps: AppHeaderProps = {
+    userEmoji,
+    nickname,
+    isOnline,
+  };
 
   return {
     appLayoutProps,

@@ -5,21 +5,40 @@ import styles from './RakudaTopMirror.module.css';
 import Link from 'next/link';
 
 /** らくだトップに寄せた「表示名」ブロック。取得は同一オリジンの `/api/rakuda-profile` 経由 */
+function readRakudaQueryProfile(): { urlEmoji: string; urlNick: string } {
+  if (typeof window === 'undefined') return { urlEmoji: '', urlNick: '' };
+  try {
+    const sp = new URL(window.location.href).searchParams;
+    return {
+      urlEmoji: (sp.get('rkEmoji') ?? '').trim(),
+      urlNick: (sp.get('rkNick') ?? '').trim(),
+    };
+  } catch {
+    return { urlEmoji: '', urlNick: '' };
+  }
+}
+
 export default function RakudaTopMirror() {
   const [emoji, setEmoji] = useState('');
   const [nickname, setNickname] = useState('');
   const load = useCallback(async () => {
+    const { urlEmoji, urlNick } = readRakudaQueryProfile();
     try {
       const r = await fetch('/api/rakuda-profile', { cache: 'no-store' });
       const j: unknown = await r.json();
       if (typeof j !== 'object' || !j || typeof (j as { profile?: unknown }).profile !== 'object') {
+        setEmoji(urlEmoji);
+        setNickname(urlNick);
         return;
       }
       const p = (j as { profile: { emoji?: unknown; nickname?: unknown } }).profile;
-      setEmoji(typeof p.emoji === 'string' ? p.emoji : '');
-      setNickname(typeof p.nickname === 'string' ? p.nickname : '');
+      const apiEmoji = typeof p.emoji === 'string' ? p.emoji : '';
+      const apiNick = typeof p.nickname === 'string' ? p.nickname : '';
+      setEmoji(urlEmoji || apiEmoji);
+      setNickname(urlNick || apiNick);
     } catch {
-      /* route が常に JSON を返すので通常ここには来ない */
+      setEmoji(urlEmoji);
+      setNickname(urlNick);
     }
   }, []);
 

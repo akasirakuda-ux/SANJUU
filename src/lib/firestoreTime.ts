@@ -66,7 +66,7 @@ export function formatFirestoreTimeJa(
   return new Date(ms).toLocaleString('ja-JP', options);
 }
 
-/** 募集の標準所要時間（作成時の recruitDeadlineAt オフセット・createdAt からの仮締切にも使用）。`HundredCreate` と同値。 */
+/** 募集の標準所要時間（作成時の recruitDeadlineAt オフセット・createdAt からの仮締切にも使用）。 */
 export const HUNDRED_RECRUIT_WINDOW_MS = 5 * 60 * 1000;
 
 /**

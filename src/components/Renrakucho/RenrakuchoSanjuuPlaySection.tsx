@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { sanjuuWebOrigin } from '../../lib/sanjuuWebOrigin';
+import { sanjuuHttpApiOrigin, sanjuuWebOrigin } from '../../lib/sanjuuWebOrigin';
 import SanjuuBrandHeading from '../SanjuuBrandHeading';
 
 export type SanjuuPlayRoomListing = {
@@ -10,9 +10,10 @@ export type SanjuuPlayRoomListing = {
   started: boolean;
 };
 
-function sanjuuHttpBase(): string {
-  const v = (import.meta.env.VITE_SANJUU_HTTP_BASE as string | undefined)?.trim();
-  return v || 'http://localhost:8080';
+function playApi(path: string): string {
+  const base = sanjuuHttpApiOrigin();
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return base ? `${base}${p}` : p;
 }
 
 function goPlay(roomId: number, hostKey?: string) {
@@ -22,18 +23,22 @@ function goPlay(roomId: number, hostKey?: string) {
 }
 
 /**
- * 連絡帳（掲示板）内の 30SANJUU：募集一覧・参加（SANJUU /play へ。Firebase 非依存）
+ * 連絡帳（掲示板）内の 30SANJUU：募集一覧・参加（SANJUU `/play` へ）
  */
+const POLL_OK_MS = 20_000;
+const POLL_FAIL_MS = 30_000;
+const MAX_CONSECUTIVE_FAILURES = 3;
+
 const RenrakuchoSanjuuPlaySection: React.FC = () => {
   const [rooms, setRooms] = useState<SanjuuPlayRoomListing[]>([]);
   const [recruitBusy, setRecruitBusy] = useState(false);
 
-  const fetchRooms = useCallback(async () => {
+  const fetchRooms = useCallback(async (): Promise<boolean> => {
     try {
-      const r = await fetch(`${sanjuuHttpBase()}/api/play/rooms`, { cache: 'no-store' });
-      if (!r.ok) return;
+      const r = await fetch(playApi('/api/play/rooms'), { cache: 'no-store' });
+      if (!r.ok) return false;
       const j: unknown = await r.json();
-      if (!Array.isArray(j)) return;
+      if (!Array.isArray(j)) return false;
       const list: SanjuuPlayRoomListing[] = [];
       for (const row of j) {
         if (typeof row !== 'object' || !row) continue;
@@ -49,15 +54,40 @@ const RenrakuchoSanjuuPlaySection: React.FC = () => {
         });
       }
       setRooms(list);
+      return true;
     } catch {
-      /* ignore */
+      return false;
     }
   }, []);
 
   useEffect(() => {
-    void fetchRooms();
-    const id = window.setInterval(() => void fetchRooms(), 1000);
-    return () => window.clearInterval(id);
+    let cancelled = false;
+    let timeoutId = 0;
+    let consecutiveFailures = 0;
+    const schedule = (delayMs: number) => {
+      if (timeoutId) window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => void tick(), delayMs);
+    };
+    const tick = async () => {
+      if (cancelled) return;
+      const ok = await fetchRooms();
+      if (cancelled) return;
+      if (ok) {
+        consecutiveFailures = 0;
+        schedule(POLL_OK_MS);
+        return;
+      }
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        return;
+      }
+      schedule(POLL_FAIL_MS);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
   }, [fetchRooms]);
 
   const recruiting = rooms.filter((x) => !x.started);
@@ -65,7 +95,7 @@ const RenrakuchoSanjuuPlaySection: React.FC = () => {
   const recruit = async () => {
     setRecruitBusy(true);
     try {
-      const r = await fetch(`${sanjuuHttpBase()}/api/play/room`, {
+      const r = await fetch(playApi('/api/play/room'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ word: 'さくら' }),
@@ -95,7 +125,7 @@ const RenrakuchoSanjuuPlaySection: React.FC = () => {
           type="button"
           disabled={recruitBusy}
           onClick={() => void recruit()}
-          className="rounded-xl bg-[#3B82F6] px-4 py-2.5 text-sm font-black text-white shadow-sm transition-transform active:scale-[0.99] disabled:opacity-50"
+          className="rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-black text-white shadow-sm transition-transform active:scale-[0.99] disabled:opacity-50"
         >
           あそびを募集する
         </button>

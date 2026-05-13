@@ -42,7 +42,6 @@ import {
   FirestoreErrorInfo,
   type RenrakuchoPublicScreenState,
 } from './types';
-import AdSpace from '../AdSpace';
 import PostScreen from './PostScreen';
 import PublicScreen from './PublicScreen';
 import AdminScreen from './AdminScreen';
@@ -77,7 +76,6 @@ async function adminBatchSetBlockedByAuthorUid(
 const RESUMABLE_PUBLIC_SCREENS: readonly RenrakuchoPublicScreenState[] = [
   'list',
   'closed',
-  'hundred-create',
   'hundred-detail',
   'hundred-wait',
   'hundred-board',
@@ -92,7 +90,6 @@ interface RenrakuchoProps {
   onJoinRoom?: (roomId: string) => void;
   onStartHundred: (roomId: string) => void;
   ensureAuth: () => Promise<void>;
-  onNavigateToSelectWithRenrakucho: () => void;
   initialActiveTab?: 'post' | 'public' | 'admin';
   initialPublicScreen?: RenrakuchoPublicScreenState;
   /** 連絡帳メインタブ内バナー（グローバルと共有。かんりタブでは使わない） */
@@ -135,7 +132,6 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   onJoinRoom,
   onStartHundred,
   ensureAuth,
-  onNavigateToSelectWithRenrakucho,
   initialActiveTab,
   initialPublicScreen,
   isAdVisible = true,
@@ -181,6 +177,24 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   const [tempName, setTempName] = useState(nickname || '');
   const [tempEmoji, setTempEmoji] = useState(userEmoji || '');
   const hasProfile = !!(nickname && nickname.trim() && userEmoji && userEmoji.trim());
+
+  const [pathSync, setPathSync] = useState(0);
+  useEffect(() => {
+    const bump = () => setPathSync((n) => n + 1);
+    window.addEventListener('popstate', bump);
+    return () => window.removeEventListener('popstate', bump);
+  }, []);
+
+  /** `/keijiban` 直リンク時は見出しを「掲示板」にし、30 募集ブロックは出さない */
+  const isKeijibanPath = useMemo(() => {
+    void pathSync;
+    try {
+      const path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+      return path === '/keijiban' || path.endsWith('/keijiban');
+    } catch {
+      return false;
+    }
+  }, [pathSync]);
 
   useEffect(() => {
     try {
@@ -963,7 +977,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
 
   const themeVariant = useMemo((): 'default' | 'hundred' => {
     if (activeTab !== 'main') return 'default';
-    return ['hundred-create', 'hundred-detail', 'hundred-wait', 'hundred-board', 'closed'].includes(publicScreen)
+    return ['hundred-detail', 'hundred-wait', 'hundred-board', 'closed'].includes(publicScreen)
       ? 'hundred'
       : 'default';
   }, [activeTab, publicScreen]);
@@ -972,6 +986,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     <RenrakuchoLayout
       onBack={onBack}
       themeVariant={themeVariant}
+      headerTitle={isKeijibanPath ? '掲示板' : undefined}
       suppressActiveUsersStrip={activeTab === 'main' && publicScreen === 'hundred-wait'}
       activeTab={activeTab}
       setActiveTab={setActiveTab}
@@ -1030,7 +1045,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
                   setPublicScreen('list');
                 }}
                 onHundredGenerationCancelled={handleHundredGenerationCancelled}
-                onNavigateToSelectWithRenrakucho={onNavigateToSelectWithRenrakucho}
+                hideSanjuuRecruitmentSection={isKeijibanPath}
               />
             </div>
             <div
@@ -1053,17 +1068,6 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
                 onOpenProfileSetup={() => setShowProfileSetup(true)}
               />
             </div>
-            {isAdVisible && !streamMode ? (
-              <div className="relative z-[20] shrink-0 w-full border-t border-black/5">
-                <AdSpace
-                  isVisible
-                  onHide={() => setIsAdVisible?.(false)}
-                  language="ja"
-                  viewerCount={viewerCount}
-                  placement="inline"
-                />
-              </div>
-            ) : null}
           </div>
         )}
 

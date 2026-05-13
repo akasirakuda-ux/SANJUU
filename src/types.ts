@@ -99,7 +99,6 @@ export interface MasterData {
 }
 
 export type ScreenType =
-  | 'entrance'
   | 'select'
   | 'game'
   | 'seat-selection'

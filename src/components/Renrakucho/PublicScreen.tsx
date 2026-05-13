@@ -51,14 +51,7 @@ function hundredSortRank(item: HundredPublicRecruit, room: HundredRoomListMeta |
 const PublicScreen: React.FC<{
   publicScreen: string;
   setPublicScreen: React.Dispatch<
-    React.SetStateAction<
-      | 'list'
-      | 'closed'
-      | 'hundred-create'
-      | 'hundred-detail'
-      | 'hundred-wait'
-      | 'hundred-board'
-    >
+    React.SetStateAction<'list' | 'closed' | 'hundred-detail' | 'hundred-wait' | 'hundred-board'>
   >;
   hundredRoomMetaByRoomId: Record<string, HundredRoomListMeta>;
   publicHundred: HundredPublicRecruit[];
@@ -84,7 +77,8 @@ const PublicScreen: React.FC<{
   streamMode?: boolean;
   onCloseHundredRecruitment: () => void | Promise<void>;
   onHundredGenerationCancelled?: () => void;
-  onNavigateToSelectWithRenrakucho: () => void;
+  /** `/keijiban` から入ったとき 30 募集ブロックを出さない */
+  hideSanjuuRecruitmentSection?: boolean;
 }> = ({
   publicScreen,
   setPublicScreen,
@@ -108,7 +102,7 @@ const PublicScreen: React.FC<{
   streamMode = false,
   onCloseHundredRecruitment,
   onHundredGenerationCancelled,
-  onNavigateToSelectWithRenrakucho,
+  hideSanjuuRecruitmentSection = false,
 }) => {
   const [now, setNow] = useState(() => Date.now());
 
@@ -236,10 +230,6 @@ const PublicScreen: React.FC<{
     }
   }, [sortedPublicItems]);
 
-  const handleOpenHundredCreate = useCallback(() => {
-    setPublicScreen('hundred-create');
-  }, [setPublicScreen]);
-
   const publicCards = useMemo(() => {
     return sortedPublicItems.map((item: any) =>
       item.type === 'hundred' ? (
@@ -321,33 +311,14 @@ const PublicScreen: React.FC<{
 
       {publicScreen === 'list' && (
         <>
-          <SanjuuBrandHeading as="h1" />
-          <RenrakuchoSanjuuPlaySection />
+          {!hideSanjuuRecruitmentSection ? (
+            <>
+              <SanjuuBrandHeading as="h1" />
+              <RenrakuchoSanjuuPlaySection />
+            </>
+          ) : null}
 
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              className="relative flex w-full min-h-[88px] items-stretch overflow-hidden rounded-xl border-2 border-[#5a3d28] text-xl font-black text-amber-950 shadow-sm transition-transform active:scale-[0.99]"
-              onClick={handleOpenHundredCreate}
-            >
-              <span
-                className="pointer-events-none absolute inset-0 z-0 bg-[#e3d5bc]"
-                style={{ backgroundColor: '#e3d5bc' }}
-                aria-hidden
-              />
-              <span className="relative z-10 flex w-full items-center justify-center gap-3 px-3 py-3 md:gap-4 md:px-4">
-                <span className="text-5xl leading-none shrink-0 md:text-6xl" aria-hidden>
-                  👨‍👩‍👧‍👦
-                </span>
-                <span className="min-w-0 text-left leading-tight">
-                  探しものの問題を作り
-                  <br />
-                  掲示板にのせる
-                </span>
-              </span>
-            </button>
-          </div>
-
+          {/* 旧: 「探しものの問題を作り／掲示板にのせる」大型CTA（HundredCreate）は撤去済み。作成は別テーブル運用のためここには戻さない。 */}
           <RenrakuchoBoardNotice />
 
           {!isAdmin && myPrivateVisible.length > 0 ? (
@@ -428,11 +399,9 @@ const PublicScreen: React.FC<{
       <HundredFlow
         publicScreen={publicScreen}
         selectedHundred={selectedHundred}
-        setSelectedHundred={setSelectedHundred}
         nickname={nickname}
         userEmoji={userEmoji}
         currentUid={currentUid}
-        isAdmin={isAdmin}
         setPublicScreen={setPublicScreen}
         onStartHundred={onStartHundred}
         streamMode={streamMode}

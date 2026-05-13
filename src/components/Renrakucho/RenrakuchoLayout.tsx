@@ -11,6 +11,8 @@ const RenrakuchoLayout: React.FC<{
   onBack: () => void;
   /** 連絡帳デフォルトは琥珀系、みんなであそぶフロー中は情熱の赤 */
   themeVariant?: 'default' | 'hundred';
+  /** 上部見出し（未指定なら Header 既定の「みんなであそぶ（掲示板）」） */
+  headerTitle?: string;
   /** みんなで待機ロビーなど、上部の「連絡帳をひらいている人」帯を隠す */
   suppressActiveUsersStrip?: boolean;
   activeTab: 'main' | 'admin';
@@ -32,6 +34,7 @@ const RenrakuchoLayout: React.FC<{
 }> = ({
   onBack,
   themeVariant = 'default',
+  headerTitle,
   suppressActiveUsersStrip = false,
   activeTab,
   setActiveTab,
@@ -59,7 +62,7 @@ const RenrakuchoLayout: React.FC<{
       }
     >
       <RakudaFloatingBackdrop variant={themeVariant === 'hundred' ? 'minna' : 'renraku'} />
-      <Header onBack={onBack} variant={themeVariant} />
+      <Header onBack={onBack} variant={themeVariant} title={headerTitle} />
 
       <TabBar
         themeVariant={themeVariant}

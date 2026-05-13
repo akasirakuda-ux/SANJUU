@@ -85,7 +85,7 @@ export const useGame = (
   userEmoji: string,
   showPuzzleSizeHint?: (message: string) => void
 ) => {
-  const [screen, setScreen] = useState<ScreenType>('entrance');
+  const [screen, setScreen] = useState<ScreenType>('seat-selection');
   const [difficulty, setDifficulty] = useState(3);
   const [isMultiplay, setIsMultiplay] = useState(false);
   const [isSyncMode, setIsSyncMode] = useState(true);

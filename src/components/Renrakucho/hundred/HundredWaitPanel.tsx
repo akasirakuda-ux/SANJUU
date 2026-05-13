@@ -384,7 +384,7 @@ const HundredWaitPanel: React.FC<{
       await autoResetProgressBeforeStart();
 
       // 探しもの（単語1つを大量配置）の盤面を生成し、hundred_rooms に保存して GameScreen へ遷移
-      // `hundred_public` / HundredCreate と同じ number（正方形の一辺）。欠損時は作成画面の既定 50
+      // `hundred_public` と同じ number（正方形の一辺）。欠損時は既定 50
       const size = Number(selectedHundred.boardSize) || 50;
       const targetWord = (selectedHundred.targetWord || '').trim();
       if (!targetWord) {
