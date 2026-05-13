@@ -6,11 +6,9 @@ import { RAKUDA_PROFILE_SETTINGS_ANCHOR_ID } from '../components/AppHeader';
 import ModeEntryLayout from '../components/ModeEntryLayout';
 import QRCode from 'qrcode';
 
-import { User, signOut } from 'firebase/auth';
+import { User } from 'firebase/auth';
 import { btnGhost } from '../ui/policy';
 import type { UserAccount } from '../types';
-import { auth } from '../firebase';
-import { isRenrakuAdmin } from '../lib/renrakuAdmin';
 import {
   appendRakudaProfileQuery,
   rakudaCommunityBulletinUrl,
@@ -50,17 +48,17 @@ const hubBtn =
 const SeatSelection: React.FC<SeatSelectionProps> = ({
   onSelectWindow,
   onOpenHundredHub: _onOpenHundredHubFromParent,
-  onOpenRenrakuchoAdmin,
+  onOpenRenrakuchoAdmin: _onOpenRenrakuchoAdmin,
   onSelectQuietRoom,
   onOpenStampCard,
   onOpenSettings,
-  isOnline,
+  isOnline: _isOnline,
   onGoogleLogin,
   firebaseUser,
   hasActiveRecruitments: _hasActiveRecruitments,
   renrakuchoHasUnread = false,
   suppressSanjuuRoomPoll = false,
-  viewerCount,
+  viewerCount: _viewerCount,
   nickname,
   setNickname,
   userEmoji,
@@ -175,13 +173,6 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
     }
   }, []);
 
-  const isOwnerAdmin = useMemo(() => {
-    if (!firebaseUser) return false;
-    if (!isRenrakuAdmin(firebaseUser)) return false;
-    const email = (firebaseUser.email || '').trim().toLowerCase();
-    return email === 'akasirakuda@gmail.com';
-  }, [firebaseUser]);
-
   // Public QR (canonical URL)
   useEffect(() => {
     let cancelled = false;
@@ -270,84 +261,6 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
     setShowRegisteredMessage(true);
     setTimeout(() => setShowRegisteredMessage(false), 2500);
   };
-
-  const topRightSlot = (
-    <div className="flex items-center justify-end gap-2 flex-wrap">
-      {isOwnerAdmin ? (
-        <div className="bg-emerald-50/95 px-3 py-2 rounded-xl text-[11px] font-black border border-emerald-200 text-emerald-900 flex items-center gap-2 shadow-sm">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-          <span>管理者としてオンライン中</span>
-        </div>
-      ) : (
-        <>
-          <div className="bg-white/90 px-2.5 py-1.5 rounded-xl text-[10px] font-black border border-slate-200/80 text-slate-700 flex items-center gap-2 shadow-sm">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
-            <span>{isOnline ? 'オンライン中' : 'オフライン'}</span>
-          </div>
-          {firebaseUser ? (
-            <>
-              <div className="bg-white/90 px-2.5 py-1.5 rounded-xl text-[10px] font-black border border-slate-200/80 text-slate-700 shadow-sm max-w-[min(52vw,18rem)] truncate">
-                {firebaseUser.isAnonymous
-                  ? `匿名ログイン（UID: ${firebaseUser.uid.slice(0, 6)}…）`
-                  : firebaseUser.email
-                    ? `Google: ${firebaseUser.email}`
-                    : 'Google: (メール不明)'}
-              </div>
-              {firebaseUser.isAnonymous && onGoogleLogin ? (
-                <button
-                  type="button"
-                  onClick={onGoogleLogin}
-                  className={`${btnGhost} px-2.5 py-1.5 text-[10px] shadow-sm`}
-                  title="Google アカウントでログイン（匿名→Google連携）"
-                >
-                  🔑 ログイン
-                </button>
-              ) : null}
-              <div
-                className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black border shadow-sm ${
-                  isRenrakuAdmin(firebaseUser)
-                    ? 'bg-emerald-50/90 border-emerald-200 text-emerald-800'
-                    : 'bg-rose-50/90 border-rose-200 text-rose-800'
-                }`}
-                title={`UID: ${firebaseUser.uid}`}
-              >
-                {isRenrakuAdmin(firebaseUser) ? '管理者OK' : '管理者NG'}
-              </div>
-              {isRenrakuAdmin(firebaseUser) ? (
-                <button
-                  type="button"
-                  onClick={onOpenRenrakuchoAdmin}
-                  className={`${btnGhost} px-2.5 py-1.5 text-[10px] shadow-sm`}
-                  title="管理者（かんり）"
-                >
-                  かんり
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void signOut(auth)}
-                className={`${btnGhost} px-2.5 py-1.5 text-[10px] shadow-sm`}
-                title="ログアウト"
-              >
-                ログアウト
-              </button>
-            </>
-          ) : null}
-        </>
-      )}
-        {viewerCount !== undefined && (
-          <div className="bg-amber-50/95 px-2.5 py-1.5 rounded-xl text-[10px] font-medium border border-amber-200/80 text-slate-700 flex items-center gap-2 shadow-sm">
-            <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse shrink-0" />
-            <span>{viewerCount}名がオンライン中</span>
-          </div>
-        )}
-        {!firebaseUser && onGoogleLogin && (
-          <button type="button" onClick={onGoogleLogin} className={`${btnGhost} px-2.5 py-1.5 text-[10px] shadow-sm`}>
-            🔑 ログイン
-          </button>
-        )}
-    </div>
-  );
 
   const streamToggleButton = (
     <button
@@ -469,6 +382,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
             </div>
           ) : null}
 
+          {/* 右上のオンライン/匿名/Google 等は SeatSelection から除去。表示名＋オンライン行は AppHeader（body ポータル） */}
           <ModeEntryLayout
             title="らくだ珈琲"
             subtitle="永遠の素人。ゆるゆると遊んでいってね"
@@ -493,7 +407,6 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                 {settingsButton}
               </div>
             }
-            topRight={topRightSlot}
             titleTopClass={qrDataUrl ? 'top-[28%]' : 'top-[18%]'}
             childrenTopClass={qrDataUrl ? 'top-[44%]' : 'top-[34%]'}
             mainColumnTopClass={qrDataUrl ? 'top-[56%]' : 'top-[46%]'}

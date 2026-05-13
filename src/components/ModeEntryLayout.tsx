@@ -108,7 +108,11 @@ const ModeEntryLayout: React.FC<ModeEntryLayoutProps> = ({
       }`}
     >
       {rakudaBackdropVariant ? <RakudaFloatingBackdrop variant={rakudaBackdropVariant} /> : null}
-      <div className="absolute top-0 left-0 w-full flex items-center justify-between px-4 z-30 pt-[env(safe-area-inset-top)] py-2 min-h-[56px]">
+      <div
+        className={`absolute top-0 left-0 w-full flex items-center px-4 z-30 pt-[env(safe-area-inset-top)] py-2 min-h-[56px] ${
+          topRight ? 'justify-between' : 'justify-start'
+        }`}
+      >
         <div className="flex items-center gap-2 min-h-[40px]">
           {topLeft}
           {onBack && (
@@ -125,7 +129,7 @@ const ModeEntryLayout: React.FC<ModeEntryLayoutProps> = ({
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">{topRight}</div>
+        {topRight ? <div className="flex items-center gap-2 flex-wrap justify-end min-w-0">{topRight}</div> : null}
       </div>
 
       <div
