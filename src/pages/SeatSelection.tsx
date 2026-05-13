@@ -115,7 +115,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
         <div className="min-w-0">
           <div className="text-[11px] font-black">はじめての方へ</div>
           <div className="text-[10px] font-medium leading-relaxed text-slate-600 mt-0.5">
-            右上の <span className="font-black">🔑ログイン（オンライン）</span> を押すと、
+            下の <span className="font-black">🔑 いまログインする</span> から Google でログインすると、
             みんなであそぶ・連絡帳が安定します。
           </div>
           <div className="mt-2 flex items-center gap-2">
