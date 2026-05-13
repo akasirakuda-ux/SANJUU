@@ -20,9 +20,12 @@ const ADSENSE_CLIENT = 'ca-pub-7810798546990694';
 const ADSENSE_SLOT_FROM_AD_CONSOLE = '4524971505';
 const ADSENSE_SLOT_FROM_ENV = (import.meta.env.VITE_ADSENSE_AD_SLOT as string | undefined)?.trim() ?? '';
 
-/** モバイル下部バナー用の固定サイズ（IAB 系）。data-ad-format 省略で 400 になりにくい */
-const BANNER_W = 320;
-const BANNER_H = 50;
+/** 実際の pagead リクエストで見える format=350x100 に合わせる（枠と不一致だと 400 になりやすい） */
+const BANNER_W = 350;
+const BANNER_H = 100;
+
+/** `VITE_ADSENSE_SUPPRESS_PUSH=1` で adsbygoogle.push を止め、ネットワークの 400 を避ける（帯のみ） */
+const SUPPRESS_ADSENSE_PUSH = import.meta.env.VITE_ADSENSE_SUPPRESS_PUSH === '1';
 
 function clampBannerHeightPx(raw: number): number {
   if (!Number.isFinite(raw) || raw <= 0) return BANNER_H;
@@ -40,6 +43,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
   const adSlot = (ADSENSE_SLOT_FROM_AD_CONSOLE || ADSENSE_SLOT_FROM_ENV).trim();
 
   const enabled = useMemo(() => {
+    if (SUPPRESS_ADSENSE_PUSH) return false;
     return (
       ADSENSE_CLIENT.startsWith('ca-pub-') &&
       !ADSENSE_CLIENT.includes('XXXX') &&
@@ -184,7 +188,7 @@ const AdSpace: React.FC<AdSpaceProps> = ({
         </span>
         {enabled && !loadError ? (
           <div
-            className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[50px] [&_iframe]:!max-w-[320px]"
+            className="relative min-h-0 min-w-0 flex-1 flex items-center justify-center [&_iframe]:!max-h-[100px] [&_iframe]:!max-w-full"
             style={adClipBoxStyle}
           >
             <ins
