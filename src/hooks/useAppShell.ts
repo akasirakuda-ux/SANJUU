@@ -33,6 +33,12 @@ import AppRouter from '../components/AppRouter';
 import type { AppLayoutProps } from '../components/AppLayout';
 import type { AppHeaderProps } from '../components/AppHeader';
 import type { RenrakuchoPublicScreenState } from '../components/Renrakucho/types';
+import {
+  INTERSTITIAL_ARM_MS,
+  INTERSTITIAL_MIN_GAP_MS,
+  readLastInterstitialDismissedMs,
+  writeLastInterstitialDismissedMs,
+} from '../lib/interstitialPolicy';
 
 const RENRAKU_RESUME_KEY = 'rk_renraku_resume';
 
@@ -144,6 +150,11 @@ export const useAppShell = () => {
   }, []);
   const [isStampCardOpen, setIsStampCardOpen] = useState(false);
   const [showFullScreenAd, setShowFullScreenAd] = useState(false);
+  /** 2分経過後「次の自然な区切り」で全面広告を出してよい（メモリのみ） */
+  const interstitialArmedRef = useRef(false);
+  const lastInterstitialDismissedMsRef = useRef(readLastInterstitialDismissedMs());
+  const interstitialDismissWaitersRef = useRef<Array<() => void>>([]);
+
   const [showRenrakucho, setShowRenrakuchoState] = useState(false);
   const [renrakuchoMountKey, setRenrakuchoMountKey] = useState(0);
   const [renrakuchoInitialActiveTab, setRenrakuchoInitialActiveTab] = useState<'post' | 'public' | 'admin' | undefined>(
@@ -188,6 +199,23 @@ export const useAppShell = () => {
       return false;
     }
   }, []);
+
+  // 全面広告: 永続化された「最後に閉じた時刻」で 2 分アームを更新
+  useEffect(() => {
+    lastInterstitialDismissedMsRef.current = readLastInterstitialDismissedMs();
+    if (!streamMode && Date.now() - lastInterstitialDismissedMsRef.current >= INTERSTITIAL_ARM_MS) {
+      interstitialArmedRef.current = true;
+    }
+  }, [streamMode]);
+
+  useEffect(() => {
+    if (streamMode) return;
+    const id = window.setInterval(() => {
+      const last = lastInterstitialDismissedMsRef.current;
+      if (Date.now() - last >= INTERSTITIAL_ARM_MS) interstitialArmedRef.current = true;
+    }, 10_000);
+    return () => window.clearInterval(id);
+  }, [streamMode]);
 
   // GA4: SPA の画面遷移（pushState/replaceState/popstate）でも page_view を送る
   useEffect(() => {
@@ -767,14 +795,50 @@ export const useAppShell = () => {
     handleRecordFinish();
   }, [handleRecordFinish]);
 
-  const handleShowFullScreenAd = useCallback(async (count: number) => {
-    if (streamMode) return;
-    if (count > 0 && count % 3 === 0) {
-      adService.showInterstitial().then(() => {
-        setShowFullScreenAd(true);
-      });
+  const flushInterstitialDismissWaiter = useCallback(() => {
+    const q = interstitialDismissWaitersRef.current;
+    interstitialDismissWaitersRef.current = [];
+    for (const fn of q) {
+      try {
+        fn();
+      } catch {
+        // ignore
+      }
     }
-  }, [streamMode]);
+  }, []);
+
+  const handleDismissFullScreenAd = useCallback(() => {
+    const now = Date.now();
+    lastInterstitialDismissedMsRef.current = now;
+    writeLastInterstitialDismissedMs(now);
+    interstitialArmedRef.current = false;
+    setShowFullScreenAd(false);
+    flushInterstitialDismissWaiter();
+  }, [flushInterstitialDismissWaiter]);
+
+  /**
+   * 「自然な区切り」で呼ぶ。2分アーム済みかつ直近60秒以内に出していなければ全面広告を出し、閉じるまで await。
+   */
+  const tryInterstitialAtNaturalBreak = useCallback(async () => {
+    if (streamMode) return;
+    if (showFullScreenAd) return;
+    if (isGenerating) return;
+    const narr = typeof narration === 'string' ? narration.trim() : '';
+    if (narr.length > 0) return;
+
+    const now = Date.now();
+    const last = lastInterstitialDismissedMsRef.current;
+    if (now - last < INTERSTITIAL_MIN_GAP_MS) return;
+    if (!interstitialArmedRef.current && now - last < INTERSTITIAL_ARM_MS) return;
+    if (!interstitialArmedRef.current) return;
+
+    interstitialArmedRef.current = false;
+    await adService.showInterstitial();
+    await new Promise<void>((resolve) => {
+      interstitialDismissWaitersRef.current.push(resolve);
+      setShowFullScreenAd(true);
+    });
+  }, [streamMode, showFullScreenAd, isGenerating, narration]);
 
   const onOpenHundredHub = useCallback(async () => {
     setRenrakuchoInitialActiveTab('public');
@@ -833,7 +897,7 @@ export const useAppShell = () => {
 
   const appLayoutProps: AppLayoutProps = {
     // Ad banner is always present on normal screens; reserve space to avoid covering UI.
-    reserveBottomAdSpace: !streamMode && !(isMultiplay && screen === 'game'),
+    reserveBottomAdSpace: !streamMode && !(isMultiplay && screen === 'game') && screen !== 'seat-selection',
     language,
     isGenerating,
     isMultiplay,
@@ -842,7 +906,7 @@ export const useAppShell = () => {
     generatingTitle: syncFromHundredRooms && isGenerating ? 'ホストが問題を作成中です...' : undefined,
     generatingHint: syncFromHundredRooms && isGenerating ? 'しばらくお待ちください' : undefined,
     showFullScreenAd,
-    onDismissFullScreenAd: () => setShowFullScreenAd(false),
+    onDismissFullScreenAd: handleDismissFullScreenAd,
     showSettingsModal,
     setShowSettingsModal,
     showInstructionModal,
@@ -939,7 +1003,7 @@ export const useAppShell = () => {
     gameState,
     handleSaveHistory,
     isOnline,
-    handleShowFullScreenAd,
+    tryInterstitialAtNaturalBreak,
     handleClear,
     narration,
     difficulty,
@@ -979,7 +1043,7 @@ export const useAppShell = () => {
     roomStatus,
     syncCountdown,
     showFullScreenAd,
-    onDismissFullScreenAd: () => setShowFullScreenAd(false),
+    onDismissFullScreenAd: handleDismissFullScreenAd,
   };
 
   const headerProps: AppHeaderProps = {

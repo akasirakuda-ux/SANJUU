@@ -172,8 +172,12 @@ const GlobalOverlays: React.FC<GlobalOverlaysProps> = ({
         </div>
       )}
       
-      {/* 連絡帳は z-[200] のため、広告 z-[1200] が前面に出ると送信欄が隠れる。掲示板表示中はバナーを出さない。 */}
-      {isAdVisible && !streamMode && !(isMultiplay && screen === 'game') && !showRenrakucho && (
+      {/* 連絡帳は z が低くバナーに隠れる。席選択ハブはメニュー優先で帯なし。それ以外で下部バナー。 */}
+      {isAdVisible &&
+        !streamMode &&
+        !(isMultiplay && screen === 'game') &&
+        !showRenrakucho &&
+        screen !== 'seat-selection' && (
         <AdSpace
           isVisible={isAdVisible}
           onHide={() => setIsAdVisible(false)}
