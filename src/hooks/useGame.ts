@@ -4,7 +4,8 @@ import {
   WordCategory, ScreenType, GameState, UserAccount, Point
 } from '../types';
 import { 
-  PROHIBITED_WORDS, MASTER, convertToHiragana, convertToKatakana
+  PROHIBITED_WORDS, MASTER, convertToHiragana, convertToKatakana,
+  FISH_GROUP_EXCLUDED_WORDS, resolveCategoryDictionary
 } from '../constants';
 import { db, auth } from '../firebase';
 import { 
@@ -25,11 +26,20 @@ import {
 } from 'firebase/firestore';
 import { WORKER_CODE } from '../lib/puzzleWorker';
 import { gridRowsFromFirestore } from '../lib/hundredRoomBoard';
+import { resolveBoardCols, resolveBoardRows } from '../lib/boardDimensions';
+import { archiveHundredSessionToProblemHistory } from '../lib/hundredProblemHistory';
 import { normalizeHundredFoundList } from '../lib/hundredFoundNormalize';
+import {
+  canonicalOccurrenceKey,
+  countPlacedWordOccurrences,
+} from '../lib/hundredPickupOccurrences';
+import { replayHundredPickupWithRoboWord } from '../lib/hundredRoboReplay';
+import { RAKUDA_ROBO_NAME } from '../lib/reversiConfig';
 import { tripFirestoreCircuit } from '../lib/firestoreCircuit';
 import { geminiService } from '../services/geminiService';
 import { stringToSeed } from '../lib/utils';
 import { useSyncRoom } from './useSyncRoom';
+import { pickRandomBandColor } from '../lib/rkTheme';
 
 const PUZZLE_SIZE_HINT_JA = '問題のサイズを大きくして作ってみてね';
 
@@ -64,6 +74,18 @@ function mergeFoundWords(prevList: any[], remoteList: any[]): any[] {
   // Safety cap: keep recent-ish items only.
   if (out.length > 600) return out.slice(0, 600);
   return out;
+}
+
+function filterFishGroupPlacedWords(category: string, placedWords: GameState['placedWords']) {
+  if (category !== 'fish_group') return placedWords;
+  const excluded = new Set<string>(FISH_GROUP_EXCLUDED_WORDS);
+  return placedWords.filter((pw) => !excluded.has(pw.word));
+}
+
+function puzzleProhibitedWords(category: string) {
+  return category === 'fish_group'
+    ? [...PROHIBITED_WORDS, ...FISH_GROUP_EXCLUDED_WORDS]
+    : PROHIBITED_WORDS;
 }
 
 function isUnplayablePuzzleResult(result: { grid?: string[][]; placedWords?: unknown[] } | null | undefined) {
@@ -140,6 +162,8 @@ export const useGame = (
   const { subscribeRoom, createRoom } = useSyncRoom();
   // Prevent double-sends of the same found occurrence (e.g. pointerup double-fire / network retry UX)
   const recentHundredFoundKeysRef = useRef<Set<string>>(new Set());
+  /** 同一正解の再送時に色だけ揃える（ランダム色の idempotent 送信） */
+  const recentHundredFoundColorsRef = useRef<Map<string, string>>(new Map());
 
   const hundredOccurrenceKey = useCallback((word: string, start: Point, end: Point) => {
     const ax = start.x | 0;
@@ -149,28 +173,6 @@ export const useGame = (
     const k1 = `${word}|${ax},${ay}-${bx},${by}`;
     const k2 = `${word}|${bx},${by}-${ax},${ay}`;
     return k1 < k2 ? k1 : k2;
-  }, []);
-
-  const stableRibbonColorFor = useCallback((key: string) => {
-    // Small, deterministic hash -> 10 colors. Keeps arrayUnion idempotent for same answer.
-    let h = 2166136261;
-    for (let i = 0; i < key.length; i++) {
-      h ^= key.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    const ribbonColors = [
-      '#FF6B6B',
-      '#4ECDC4',
-      '#45B7D1',
-      '#FFA502',
-      '#7BED9F',
-      '#70A1FF',
-      '#FF7F50',
-      '#A29BFE',
-      '#E84393',
-      '#2ED573',
-    ];
-    return ribbonColors[Math.abs(h) % ribbonColors.length]!;
   }, []);
 
   useEffect(() => {
@@ -198,7 +200,7 @@ export const useGame = (
       
       setIsGenerating(true);
       
-      const dictionary = cat.words;
+      const dictionary = resolveCategoryDictionary(cat.category, cat.words);
       const isKanji =
         !!cat.isKanji || cat.category === 'kanji' || cat.category === 'yojijukugo';
 
@@ -217,13 +219,15 @@ export const useGame = (
             return;
           }
 
+          const placedWords = filterFishGroupPlacedWords(cat.category, result.placedWords);
+
           // 4. rooms/{roomId}/board に盤面データを保存
           if (isMultiplay && roomId && !isFromSync) {
             try {
               const boardRef = doc(db, `rooms/${roomId}/board/data`);
               await setDoc(boardRef, {
                 grid: result.grid,
-                words: result.placedWords,
+                words: placedWords,
                 category: cat.category, // Store category ID
                 difficulty: diff,
                 isKatakana: !!isKatakana,
@@ -250,7 +254,7 @@ export const useGame = (
 
           setGameState({
             grid: result.grid,
-            placedWords: result.placedWords,
+            placedWords,
             foundWords: [],
             category: cat,
             difficulty: diff,
@@ -283,7 +287,7 @@ export const useGame = (
         category: cat.category,
         size: diff,
         dictionary,
-        prohibitedWords: PROHIBITED_WORDS,
+        prohibitedWords: puzzleProhibitedWords(cat.category),
         isKanji,
         seed: actualSeed,
         isKatakana: !!isKatakana
@@ -495,6 +499,8 @@ export const useGame = (
         }
         const targetWord = String(d.targetWord ?? '').trim();
         const boardSize = typeof d.boardSize === 'number' ? d.boardSize : Number(d.boardSize) || 10;
+        const boardCols = resolveBoardCols({ boardCols: d.boardCols as number | undefined, boardSize, grid });
+        const boardRows = resolveBoardRows({ boardRows: d.boardRows as number | undefined, boardSize, grid });
         const words = Array.isArray(d.words) ? d.words : [];
         const hundredMode = typeof (d as any).hundredMode === 'string' ? String((d as any).hundredMode) : '';
         // みんなであそぶはプレイに時間制限を設けない（終了はクリア／ルーム終了のみ）。タイマー用は常に 0。
@@ -515,7 +521,9 @@ export const useGame = (
             emoji: hundredMode === 'pickup' ? '🧺' : '🔍',
             words: [targetWord],
           },
-          difficulty: boardSize,
+          difficulty: boardCols,
+          boardCols,
+          boardRows,
           gameMode: 'search',
           isKatakana: false,
         };
@@ -527,29 +535,18 @@ export const useGame = (
             const s = fw?.start;
             const e = fw?.end;
             if (!s || !e) continue;
-            const ax = Number(s.x);
-            const ay = Number(s.y);
-            const bx = Number(e.x);
-            const by = Number(e.y);
-            if (![ax, ay, bx, by].every(Number.isFinite)) continue;
-            const k1 = `${ax},${ay}-${bx},${by}`;
-            const k2 = `${bx},${by}-${ax},${ay}`;
-            const k = k1 < k2 ? k1 : k2;
-            if (seen.has(k)) continue;
+            const k = canonicalOccurrenceKey(
+              { x: Number(s.x), y: Number(s.y) },
+              { x: Number(e.x), y: Number(e.y) },
+            );
+            if (!k || seen.has(k)) continue;
             seen.add(k);
             out.push(fw);
           }
           return out;
         };
 
-        const totalOccurrences = (() => {
-          let n = 0;
-          for (const pw of words as any[]) {
-            const occs = pw && Array.isArray((pw as any).occurrences) ? (pw as any).occurrences : [];
-            n += occs.length;
-          }
-          return n;
-        })();
+        const totalOccurrences = countPlacedWordOccurrences(words);
 
         // Heavy rooms can emit frequent updates (foundWords / status).
         // Coalesce updates so low-memory devices don't thrash React renders.
@@ -699,6 +696,53 @@ export const useGame = (
     }
   }, [isMultiplay, roomId, firebaseUser, roomStartTime]);
 
+  const onRakudaRoboReplay = useCallback(async (): Promise<boolean> => {
+    if (!roomId || !syncFromHundredRooms) return false;
+    const uid = firebaseUser?.uid || auth.currentUser?.uid;
+    if (!uid || uid !== hundredRoomHostUid) {
+      setNotification('ホストだけがもう一回を開始できます');
+      return false;
+    }
+
+    const cols = resolveBoardCols(gameState);
+    const rows = resolveBoardRows(gameState);
+    const previousTargetWord =
+      (gameState.targetWord || gameState.category?.words?.[0] || '').trim();
+    if (!previousTargetWord) {
+      setNotification('探すことばが見つかりませんでした');
+      return false;
+    }
+
+    setIsGenerating(true);
+    try {
+      const result = await replayHundredPickupWithRoboWord({
+        roomId,
+        cols,
+        rows,
+        previousTargetWord,
+      });
+      if (!result.ok) {
+        setNotification(result.message);
+        return false;
+      }
+      setNotification(`探すことば（${RAKUDA_ROBO_NAME}）: ${result.targetWord}`);
+      return true;
+    } catch (e) {
+      console.error('[useGame] onRakudaRoboReplay', e);
+      setNotification('もう一回の準備に失敗しました');
+      return false;
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [
+    roomId,
+    syncFromHundredRooms,
+    firebaseUser,
+    hundredRoomHostUid,
+    gameState,
+    setNotification,
+  ]);
+
   const onHundredRoomFinished = useCallback(
     async (reason: 'timeout' | 'cleared') => {
       if (!roomId || !syncFromHundredRooms) return;
@@ -712,6 +756,12 @@ export const useGame = (
           },
           { merge: true }
         );
+
+        try {
+          await archiveHundredSessionToProblemHistory(roomId, reason);
+        } catch (e) {
+          console.warn('[useGame] archive hundred problem history failed', e);
+        }
 
         // Close the public recruitment entry so the board doesn't keep showing "募集中" after finish.
         // Only the host should do this cleanup.
@@ -751,25 +801,14 @@ export const useGame = (
     if (!localUid) return;
     const currentUid = requiresFirebaseUid ? localUid : localUid;
 
-    // 正解の帯（リボン）色
-    // - 通常: ランダム
-    // - みんなであそぶ(hundred_rooms): arrayUnion を idempotent にするため「同一答え(座標)は同一色」に固定
+    // 正解の帯（リボン）色: 10 色パレットからランダム（見つけた瞬間に決めて Firestore に保存）
     const hundredKey = hundredOccurrenceKey(word, start, end);
-    const assignedColor =
-      !isMultiplay && isSyncMode && roomId && syncFromHundredRooms
-        ? stableRibbonColorFor(hundredKey)
-        : [
-            '#FF6B6B',
-            '#4ECDC4',
-            '#45B7D1',
-            '#FFA502',
-            '#7BED9F',
-            '#70A1FF',
-            '#FF7F50',
-            '#A29BFE',
-            '#E84393',
-            '#2ED573',
-          ][Math.floor(Math.random() * 10)]!;
+    let assignedColor = pickRandomBandColor();
+    if (!isMultiplay && isSyncMode && roomId && syncFromHundredRooms) {
+      const cached = recentHundredFoundColorsRef.current.get(hundredKey);
+      if (cached) assignedColor = cached;
+      else recentHundredFoundColorsRef.current.set(hundredKey, assignedColor);
+    }
     const displayName = (nickname || '').trim() || 'ななし';
 
     setGameState(prev => {
@@ -825,6 +864,7 @@ export const useGame = (
         window.setTimeout(() => {
           try {
             recentHundredFoundKeysRef.current.delete(k);
+            recentHundredFoundColorsRef.current.delete(k);
           } catch {
             /* ignore */
           }
@@ -903,5 +943,6 @@ export const useGame = (
     hundredRoster,
     hundredRoomHostUid,
     onHundredRoomFinished,
+    onRakudaRoboReplay,
   };
 };

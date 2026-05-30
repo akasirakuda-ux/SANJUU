@@ -188,6 +188,7 @@ export const useAppShell = () => {
     hundredRoster,
     hundredRoomHostUid,
     onHundredRoomFinished,
+    onRakudaRoboReplay,
   } = useGame(user, setUser, nickname, language, setNotification, handleFirestoreError, authUserForUi, isAuthReady, ensureAuth, userEmoji, showPuzzleSizeHint);
 
   const [isRoomCreator, setIsRoomCreator] = useState(false);
@@ -1372,6 +1373,7 @@ export const useAppShell = () => {
     hundredRoster,
     hundredRoomHostUid,
     onHundredRoomFinished,
+    onRakudaRoboReplay,
     ensureAuth,
     hasActiveRecruitments,
     hundredRecruitHasNew,

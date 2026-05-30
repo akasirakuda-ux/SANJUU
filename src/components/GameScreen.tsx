@@ -1,18 +1,38 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import html2canvas from 'html2canvas';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft } from 'lucide-react';
 import { GameState, Point, Selection, LogEntry, PlacedWord, WordOccurrence } from '../types';
-import { convertToHiragana, convertToKatakana, getCategoryDisplayTitle, getPublicUrl } from '../constants';
+import { convertToHiragana, convertToKatakana, getCategoryDisplayTitle } from '../constants';
 import { inviteRoomCodeForShare } from './AppUIHelpers';
 import { audioService } from '../services/audioService';
 import RakudaFloatingBackdrop from './RakudaFloatingBackdrop';
 import { btnGhost, btnPrimary, cardClass } from '../ui/policy';
 import { pageTopHeadingClass } from '../ui/typography';
-import QRCode from 'qrcode';
-import { getDoc, doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { getDoc, doc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { applyHostCancelledHundredGeneration } from '../lib/hundredRecruitCancel';
+import { clearHundredRestoreSession } from '../lib/rakudaHundredRestore';
+import { RK19QuietRoomBackButton } from '../ui/baselineParts';
+import {
+  rkBandColorCount,
+  rkCssColor,
+  rkResolvedAccentPrimary,
+  rkResolvedBandColor,
+} from '../lib/rakudaHubShell';
+import { RK_GATE_NICK_DISPLAY_CLASS } from '../lib/rakudaGate';
+import {
+  countPlacedWordOccurrences,
+  countUniqueFoundOccurrences,
+} from '../lib/hundredPickupOccurrences';
+import { formatBoardDimensions, resolveBoardCols, resolveBoardRows } from '../lib/boardDimensions';
+import { RAKUDA_ROBO_EMOJI } from '../lib/reversiConfig';
+import {
+  clearFlyModalDelayMs,
+  FLY_BANNER_DURATION_SEC,
+  LAST_ONE_FLY_X_PERCENT,
+  CLEAR_FLY_X_PERCENT,
+  CLEAR_RESULT_OVERLAY_TIMING_SCALE,
+} from '../lib/clearFlyTiming';
 
 class ParticlePool {
   pool: any[] = [];
@@ -39,12 +59,13 @@ interface FloatingText { id: number; text: string; x: number; y: number; life: n
 interface GameScreenProps {
   gameState: GameState;
   onUpdateFound: (word: string, start: Point, end: Point, isHint?: boolean) => void;
-  onBack: () => void;
+  onBack: () => void | Promise<void>;
   /** みんなであそぶ（掲示板）へ戻す専用導線（任意） */
   onBackToBoard?: () => void | Promise<void>;
+  /** クリア画面から３０募集一覧へ戻す（みんなであそぶ／30プレイ） */
+  onBackToRecruitBoard?: () => void | Promise<void>;
   showToast: (msg: string) => void;
   onSaveHistory: (log: LogEntry) => void;
-  onShowFullScreenAd: (count: number) => void;
   vibrate: (pattern?: number | number[]) => void;
   language: 'ja';
   isOnline: boolean;
@@ -64,7 +85,7 @@ interface GameScreenProps {
   consecutiveClears: number;
   roomPlayers?: any[];
   roomStatus?: 'waiting' | 'start' | 'playing' | 'finished';
-  onBackToTitle?: () => void;
+  onBackToTitle?: () => void | Promise<void>;
   /** みんなであそぶ協力（同期盤・hundred_rooms） */
   hundredCoop?: boolean;
   hundredRoster?: { uid: string; name: string; emoji: string; foundCount: number }[];
@@ -73,36 +94,22 @@ interface GameScreenProps {
   /** Firebase Auth の uid（ホスト判定用） */
   currentFirebaseUid?: string | null;
   onHundredRoomFinished?: (reason: 'timeout' | 'cleared') => void;
+  /** クリア後: らくだロボが新しい探すことばで同サイズ盤面を再生成 */
+  onRakudaRoboReplay?: () => Promise<boolean>;
   /** 配信モード（軽量化） */
   streamMode?: boolean;
 }
-
-const BAND_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA502", "#7BED9F", "#70A1FF", "#FF7F50", "#A29BFE", "#E84393", "#2ED573"];
-
-/**
- * 飛び出しの「速度」= 表示要素の横幅に対する移動量(px)/秒。
- * ラストワンを基準（-200% を 2.4s）とし、クリア文言は実測幅で同じ px/s になるよう所要時間だけ伸ばす。
- */
-const FLY_BANNER_DURATION_SEC = 2.4;
-const LAST_ONE_FLY_X_PERCENT = 200;
-/** 長文でも左に流れ切るよう、自己幅に対する移動 %（ラストワンより多め） */
-const CLEAR_FLY_X_PERCENT = 420;
-/**
- * クリア結果モーダルまでの待ち・直前の飛び出し演出の所要時間の倍率。
- * 「ラストワン！」と同じ px/s に揃えるため、ここでは等倍（=計算どおりの時間）にする。
- */
-const CLEAR_RESULT_OVERLAY_TIMING_SCALE = 1;
 
 /** ラストワン／クリアの実測幅を揃える（見た目の font 系は表示と同一に） */
 const FLY_BANNER_MEASURE_STYLE: React.CSSProperties = {
   fontSize: '30vh',
   lineHeight: 1,
-  WebkitTextStroke: '12px rgba(255,255,255,0.95)',
-  textShadow: '0 10px 0 rgba(255,255,255,0.85)',
+  WebkitTextStroke: '12px var(--rk-fly-title-stroke)',
+  textShadow: 'var(--rk-fly-title-text-shadow)',
 };
 
 const GameScreen: React.FC<GameScreenProps> = ({ 
-  gameState, onUpdateFound, onBack, onBackToBoard, onSaveHistory, onShowFullScreenAd, showToast, vibrate, language, isOnline, onClear, onClearSeed, userId, onNextProblem, seed, proCode, nickname, isMultiplay = false, isSyncMode = false, roomId = null, shareRoomId = null, roomStartTime = null, consecutiveClears, roomPlayers = [],
+  gameState, onUpdateFound, onBack, onBackToBoard, onBackToRecruitBoard, onSaveHistory, showToast, vibrate, language, isOnline, onClear, onClearSeed, userId, onNextProblem, seed, proCode, nickname, isMultiplay = false, isSyncMode = false, roomId = null, shareRoomId = null, roomStartTime = null, consecutiveClears, roomPlayers = [],
   roomStatus = 'playing', onBackToTitle,
   userEmoji = '🐫',
   hundredCoop = false,
@@ -110,6 +117,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
   hundredRoomHostUid = null,
   currentFirebaseUid = null,
   onHundredRoomFinished,
+  onRakudaRoboReplay,
   streamMode = false,
 }) => {
   const displayRoomCode = inviteRoomCodeForShare(shareRoomId, roomId) || null;
@@ -133,8 +141,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
     sec: '秒',
     min: '分',
     hint: 'ヒント',
-    submitToTeacher: 'らくだ先生に提出する',
-    shareWithSeed: (seed: string) => seed ? `合言葉「${seed}」でクリア！` : 'クリアしたよ！',
   };
 
   const displaySearchWord = React.useMemo(() => {
@@ -156,37 +162,41 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return 1;
   }, [gameState.gameMode, gameState.searchTimeLimitSec]);
 
-  const requestLeaveGame = useCallback(
-    (go: () => void) => {
-      if (
-        hundredCoop &&
-        hundredRoomHostUid &&
-        currentFirebaseUid &&
-        currentFirebaseUid === hundredRoomHostUid &&
-        !window.confirm(
-          '参加のみなさんに影響する可能性があります。ホストとしてこの画面を離れますか？'
-        )
-      ) {
+  const leaveFromClearScreen = useCallback(() => {
+    vibrate(10);
+    if (hundredCoop) {
+      onClearSeed();
+      clearHundredRestoreSession();
+      if (onBackToRecruitBoard) {
+        void onBackToRecruitBoard();
         return;
       }
-      go();
-    },
-    [hundredCoop, hundredRoomHostUid, currentFirebaseUid]
-  );
+    }
+    void onBack();
+  }, [hundredCoop, onClearSeed, onBack, onBackToRecruitBoard]);
+
+  const [roboReplayBusy, setRoboReplayBusy] = useState(false);
+  const handleRakudaRoboReplay = useCallback(async () => {
+    if (!onRakudaRoboReplay || roboReplayBusy) return;
+    vibrate(10);
+    setRoboReplayBusy(true);
+    try {
+      await onRakudaRoboReplay();
+    } finally {
+      setRoboReplayBusy(false);
+    }
+  }, [onRakudaRoboReplay, roboReplayBusy, vibrate]);
 
   const [isFinished, setIsFinished] = useState(false);
   const compactStreamMode = !!streamMode && !!hundredCoop && !isFinished;
   // 一般ユーザー向け: hundredCoop（みんなであそぶ）プレイ中に端末が重い兆候が出たら自動で軽量化する
   const [autoCompactMode, setAutoCompactMode] = useState(false);
-  const [rakudaQrDataUrl, setRakudaQrDataUrl] = useState('');
   const [showAnswers, setShowAnswers] = useState(false);
   const showAnswersRef = useRef(false);
   useEffect(() => {
     showAnswersRef.current = showAnswers;
   }, [showAnswers]);
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
-  const [submitStatus, setSubmitStatus] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
-  const [submitError, setSubmitError] = useState<string>('');
   const [isSuccessFlashing, setIsSuccessFlashing] = useState(false);
   const [clearTime, setClearTime] = useState("");
   const [clearDate, setClearDate] = useState("");
@@ -200,6 +210,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const [streakCount, setStreakCount] = useState(0);
   const [showLastOneBonus, setShowLastOneBonus] = useState(false);
   const [showClearFlyBonus, setShowClearFlyBonus] = useState(false);
+  const [showHostInterruptConfirm, setShowHostInterruptConfirm] = useState(false);
+  const [hostInterruptInFlight, setHostInterruptInFlight] = useState(false);
+  const [showGuestInterruptedModal, setShowGuestInterruptedModal] = useState(false);
+  const guestInterruptHandledRef = useRef(false);
   const lastFlyMeasureRef = useRef<HTMLSpanElement>(null);
   const clearFlyMeasureRef = useRef<HTMLSpanElement>(null);
   const [flyBannerWidths, setFlyBannerWidths] = useState<{ last: number; clear: number }>({ last: 0, clear: 0 });
@@ -216,6 +230,74 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return () => window.removeEventListener('resize', measureFlyBannerWidths);
   }, [measureFlyBannerWidths, t.lastOne, t.clearFly]);
 
+  const isHundredHost = useMemo(
+    () =>
+      !!(
+        hundredCoop &&
+        roomId &&
+        currentFirebaseUid &&
+        hundredRoomHostUid &&
+        currentFirebaseUid === hundredRoomHostUid
+      ),
+    [currentFirebaseUid, hundredCoop, hundredRoomHostUid, roomId],
+  );
+
+  const goToRecruitBoard = useCallback(() => {
+    onClearSeed();
+    clearHundredRestoreSession();
+    if (onBackToRecruitBoard) {
+      void onBackToRecruitBoard();
+      return;
+    }
+    void onBack();
+  }, [onBack, onBackToRecruitBoard, onClearSeed]);
+
+  const performHostInterrupt = useCallback(async () => {
+    if (!roomId || !isHundredHost || hostInterruptInFlight) return;
+    setHostInterruptInFlight(true);
+    try {
+      const snap = await getDoc(doc(db, 'hundred_rooms', roomId));
+      const d = snap.exists() ? (snap.data() as { publicRecruitId?: unknown }) : null;
+      const publicRecruitId = typeof d?.publicRecruitId === 'string' ? d.publicRecruitId : undefined;
+      await applyHostCancelledHundredGeneration({
+        roomId,
+        hundredPublicDocId: publicRecruitId,
+        endReason: 'host_interrupted',
+      });
+      await setDoc(
+        doc(db, 'hundred_rooms', roomId),
+        { foundWords: [], updatedAt: serverTimestamp() },
+        { merge: true },
+      ).catch(() => {});
+    } catch (e) {
+      console.warn('[GameScreen] host interrupt failed', e);
+    } finally {
+      setHostInterruptInFlight(false);
+      setShowHostInterruptConfirm(false);
+      goToRecruitBoard();
+    }
+  }, [goToRecruitBoard, hostInterruptInFlight, isHundredHost, roomId]);
+
+  useEffect(() => {
+    if (!hundredCoop || !roomId || isHundredHost) return;
+    guestInterruptHandledRef.current = false;
+    const unsub = onSnapshot(
+      doc(db, 'hundred_rooms', roomId),
+      (snap) => {
+        if (!snap.exists()) return;
+        const status = (snap.data() as { status?: string }).status;
+        if (status !== 'cancelled') return;
+        if (guestInterruptHandledRef.current) return;
+        guestInterruptHandledRef.current = true;
+        setShowGuestInterruptedModal(true);
+      },
+      (err) => {
+        console.warn('[GameScreen] hundred_rooms guest interrupt listen', err);
+      },
+    );
+    return () => unsub();
+  }, [hundredCoop, isHundredHost, roomId]);
+
   /** ラストワンと同じ px/s。距離 = (CLEAR_FLY_X_PERCENT/100)*W_clear → 時間 = 距離/速度 */
   const clearFlyDurationSec = useMemo(() => {
     const wl = flyBannerWidths.last;
@@ -230,17 +312,35 @@ const GameScreen: React.FC<GameScreenProps> = ({
   }, [flyBannerWidths.last, flyBannerWidths.clear]);
 
   const clearFlyMotionDurationSec = clearFlyDurationSec * CLEAR_RESULT_OVERLAY_TIMING_SCALE;
-  const clearFlyModalDelayMs = useMemo(
-    () => Math.round(clearFlyDurationSec * 1000 * CLEAR_RESULT_OVERLAY_TIMING_SCALE + 150 * CLEAR_RESULT_OVERLAY_TIMING_SCALE),
-    [clearFlyDurationSec]
+  const clearFlyModalDelayMsValue = useMemo(
+    () =>
+      clearFlyModalDelayMs({
+        lastBannerWidthPx: flyBannerWidths.last,
+        clearBannerWidthPx: flyBannerWidths.clear,
+      }),
+    [flyBannerWidths.last, flyBannerWidths.clear],
   );
-  const clearFlyModalDelayMsRef = useRef(clearFlyModalDelayMs);
-  clearFlyModalDelayMsRef.current = clearFlyModalDelayMs;
+  const clearFlyModalDelayMsRef = useRef(clearFlyModalDelayMsValue);
+  clearFlyModalDelayMsRef.current = clearFlyModalDelayMsValue;
 
   const [displayConsecutiveClears, setDisplayConsecutiveClears] = useState(consecutiveClears);
   const [finishedPlayers, setFinishedPlayers] = useState<Set<string>>(new Set());
   const lastFoundWordsCount = useRef(gameState.foundWords.length);
-  
+  /** join/restore 直後の Firestore 同期分はボーナス・クリア演出を抑止する */
+  const joinedFoundBaselineRef = useRef<number | null>(null);
+  const joinedBaselineTimerRef = useRef<number | null>(null);
+
+  const clearJoinedFoundBaseline = useCallback(() => {
+    if (joinedBaselineTimerRef.current != null) {
+      window.clearTimeout(joinedBaselineTimerRef.current);
+      joinedBaselineTimerRef.current = null;
+    }
+    joinedFoundBaselineRef.current = null;
+  }, []);
+
+  const foundProgressAfterJoin = (count: number) =>
+    joinedFoundBaselineRef.current !== null && count > joinedFoundBaselineRef.current;
+
   const [activeSelection, setActiveSelection] = useState<Selection>({ start: null, end: null });
   const activeSelectionRef = useRef<Selection>({ start: null, end: null });
   useEffect(() => {
@@ -262,6 +362,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
   useEffect(() => {
     if (!isMultiplay || !roomId) return;
+    if (joinedFoundBaselineRef.current === null) return;
     if (gameState.foundWords.length > lastFoundWordsCount.current) {
       const newWord = gameState.foundWords[gameState.foundWords.length - 1];
       // Only notify if it's from another player
@@ -286,6 +387,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
     startTimeRef.current = Date.now();
     setClearTime("");
     setClearDate("");
+    clearJoinedFoundBaseline();
+    lastFoundWordsCount.current = 0;
     if (gameState.gameMode === 'search') {
       const limit = Number(gameState.searchTimeLimitSec);
       if (Number.isFinite(limit) && limit > 0) {
@@ -294,13 +397,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
         setTimeLeft(1);
       }
     }
-    setSubmitStatus('idle');
-    setSubmitError('');
     // Ensure the canvas is redrawn immediately on board change.
     // (In compactMode we throttle draws; without this, old ribbons can linger visually.)
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
     lastDrawAtMsRef.current = 0;
+    lastCanvasPixelSizeRef.current = { w: 0, h: 0 };
   }, [
     // A change in these typically means a new puzzle/round
     gameState.actualSeed,
@@ -309,8 +411,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
     gameState.difficulty,
     gameState.isKatakana,
     gameState.category?.category,
+    gameState.targetWord,
     gameState.gameMode,
     gameState.searchTimeLimitSec,
+    clearJoinedFoundBaseline,
   ]);
 
   // Sync finish notifications
@@ -388,32 +492,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
   }, [showStartText]);
 
-  // QR導線は「みんなであそぶ（hundredCoop）」の盤面中だけ表示する（クリア画面には出さない）。
-  const showRakudaQr = !!hundredCoop && !isFinished;
-
-  // 参加導線の QR を盤面上部中央に表示（問い合わせ対策）。
-  useEffect(() => {
-    if (!showRakudaQr) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const url = 'https://rakuda.coffee/';
-        const dataUrl = await QRCode.toDataURL(url, {
-          errorCorrectionLevel: 'H',
-          margin: 1,
-          scale: 6,
-          color: { dark: '#5a3d28', light: '#ffffff' },
-        });
-        if (!cancelled) setRakudaQrDataUrl(dataUrl);
-      } catch {
-        if (!cancelled) setRakudaQrDataUrl('');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [showRakudaQr]);
-
   // 貢献者の計算
   const contributors = React.useMemo(() => {
     const counts: Record<string, number> = {};
@@ -482,11 +560,17 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mainContentRef = useRef<HTMLDivElement>(null);
-  const clearModalRef = useRef<HTMLDivElement>(null);
   const soloBottomControlsRef = useRef<HTMLDivElement>(null);
   
-  const [layout, setLayout] = useState({ cellSize: 0, padding: 8, boardSize: 0 });
-  const [soloBottomControlsPx, setSoloBottomControlsPx] = useState(76);
+  const [layout, setLayout] = useState({
+    cellSize: 0,
+    padding: 8,
+    boardSize: 0,
+    boardWidth: 0,
+    boardHeight: 0,
+  });
+  /** ヒント・こたえ帯が縦長のため初期値だけ余裕あり（実測で上書き） */
+  const [soloBottomControlsPx, setSoloBottomControlsPx] = useState(152);
   const layoutRef = useRef(layout);
   useEffect(() => {
     layoutRef.current = layout;
@@ -503,6 +587,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const forceDrawRef = useRef(true);
   const lastActivityAtMsRef = useRef(Date.now());
   const lagScoreRef = useRef(0);
+  const lastCanvasPixelSizeRef = useRef({ w: 0, h: 0 });
+  const layoutUpdateRafRef = useRef(0);
   const startTimeRef = useRef<number>(Date.now());
   const selectionRef = useRef<Selection>({ start: null, end: null });
 
@@ -578,40 +664,122 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
   const compactMode = (compactStreamMode || (autoCompactMode && !!hundredCoop && !isFinished));
 
+  const boardParticipants = useMemo(() => {
+    if (hundredCoop && hundredRoster.length > 0) {
+      const hostUid = hundredRoomHostUid;
+      const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'ja');
+      if (!hostUid) {
+        return hundredRoster.map((p) => ({
+          uid: p.uid,
+          name: p.name,
+          emoji: (p.emoji || '🌸').trim() || '🌸',
+        }));
+      }
+      const host = hundredRoster.find((p) => p.uid === hostUid);
+      const rest = hundredRoster.filter((p) => p.uid !== hostUid).sort(byName);
+      const ordered = host ? [host, ...rest] : [...hundredRoster].sort(byName);
+      return ordered.map((p) => ({
+        uid: p.uid,
+        name: p.name,
+        emoji: (p.emoji || '🌸').trim() || '🌸',
+      }));
+    }
+    if (isMultiplay && roomPlayers.length > 0) {
+      return roomPlayers.map((p) => ({
+        uid: String(p.uid ?? p.name),
+        name: String(p.name ?? 'ななし'),
+        emoji: String(p.emoji || '👤').trim() || '👤',
+      }));
+    }
+    return [];
+  }, [hundredCoop, hundredRoster, hundredRoomHostUid, isMultiplay, roomPlayers]);
+
   const updateLayout = useCallback(() => {
     if (!mainContentRef.current || !canvasRef.current) return;
 
     const containerWidth = mainContentRef.current.clientWidth;
     const containerHeight = mainContentRef.current.clientHeight;
 
-    // mainContentRef は「盤面領域」そのもの（上下UIは除外済み）なので、
-    // ここで広告/ボタン分の予約を引くと二重に縮んで盤面が小さくなる。
-    const availableHeight = containerHeight - 12;
-    // mainContentRef already has horizontal padding (px-4), so don't subtract again.
-    const availableWidth = containerWidth;
-    
-    let availableSize = Math.min(availableWidth, availableHeight, 800);
-    if (availableSize < 0) availableSize = 0;
-    
-    const diff = Math.max(gameState.difficulty, 3);
-    const cellSize = (availableSize - (GRID_PADDING * 2)) / diff;
+    // reflow 中に一瞬 0 になると盤面を消す → canvas が黒く見える。前回サイズを維持する。
+    if (containerWidth <= 0 || containerHeight <= 0) return;
 
-    setLayout({ cellSize, padding: GRID_PADDING, boardSize: availableSize });
+    // 盤面領域の内側に少し余白を取り、上下の flex 端で切れないようにする
+    const edgeInset = 6;
+    const availableHeight = Math.max(0, containerHeight - edgeInset * 2);
+    const availableWidth = Math.max(0, containerWidth - edgeInset * 2);
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.6); 
+    const cols = resolveBoardCols({
+      boardCols: gameState.boardCols,
+      boardSize: gameState.difficulty,
+      grid: gameState.grid,
+    });
+    const rows = resolveBoardRows({
+      boardRows: gameState.boardRows,
+      boardSize: gameState.difficulty,
+      grid: gameState.grid,
+    });
+
+    let cellSize = 0;
+    let boardWidth = 0;
+    let boardHeight = 0;
+
+    if (cols !== rows) {
+      cellSize = (availableWidth - GRID_PADDING * 2) / cols;
+      boardWidth = cols * cellSize + GRID_PADDING * 2;
+      boardHeight = rows * cellSize + GRID_PADDING * 2;
+    } else {
+      let availableSize = Math.min(availableWidth, availableHeight, 800);
+      if (availableSize < 0) availableSize = 0;
+      cellSize = (availableSize - GRID_PADDING * 2) / cols;
+      boardWidth = availableSize;
+      boardHeight = availableSize;
+    }
+
+    if (cellSize <= 0 || boardWidth <= 0 || boardHeight <= 0) return;
+
+    const nextLayout = {
+      cellSize,
+      padding: GRID_PADDING,
+      boardSize: boardWidth,
+      boardWidth,
+      boardHeight,
+    };
+    const prev = layoutRef.current;
+    const layoutChanged =
+      Math.abs(prev.cellSize - nextLayout.cellSize) > 0.01 ||
+      Math.abs(prev.boardWidth - nextLayout.boardWidth) > 0.01 ||
+      Math.abs(prev.boardHeight - nextLayout.boardHeight) > 0.01;
+
+    if (layoutChanged) {
+      layoutRef.current = nextLayout;
+      setLayout(nextLayout);
+    }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.6);
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { alpha: false }); 
+    const pixelW = Math.max(1, Math.round(boardWidth * dpr));
+    const pixelH = Math.max(1, Math.round(boardHeight * dpr));
+    const lastPx = lastCanvasPixelSizeRef.current;
 
-    canvas.width = availableSize * dpr;
-    canvas.height = availableSize * dpr;
-    canvas.style.width = `${availableSize}px`;
-    canvas.style.height = `${availableSize}px`;
+    if (pixelW === lastPx.w && pixelH === lastPx.h) return;
 
+    canvas.width = pixelW;
+    canvas.height = pixelH;
+    canvas.style.width = `${boardWidth}px`;
+    canvas.style.height = `${boardHeight}px`;
+    lastCanvasPixelSizeRef.current = { w: pixelW, h: pixelH };
+
+    // width/height 代入でバッファが黒クリアされる（alpha:false）。描画ループを待たず白で埋める。
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (ctx) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.scale(dpr, dpr);
+      ctx.fillStyle = rkCssColor('--rk-white', 'rgb(255 255 255)');
+      ctx.fillRect(0, 0, boardWidth, boardHeight);
     }
-  }, [gameState.difficulty]);
+    forceDrawRef.current = true;
+    lastActivityAtMsRef.current = Date.now();
+  }, [gameState.boardCols, gameState.boardRows, gameState.difficulty, gameState.grid]);
 
   useEffect(() => {
     updateLayout();
@@ -629,9 +797,21 @@ const GameScreen: React.FC<GameScreenProps> = ({
   useEffect(() => {
     if (!mainContentRef.current) return;
     if (typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => updateLayout());
+    const ro = new ResizeObserver(() => {
+      if (layoutUpdateRafRef.current) return;
+      layoutUpdateRafRef.current = window.requestAnimationFrame(() => {
+        layoutUpdateRafRef.current = 0;
+        updateLayout();
+      });
+    });
     ro.observe(mainContentRef.current);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (layoutUpdateRafRef.current) {
+        window.cancelAnimationFrame(layoutUpdateRafRef.current);
+        layoutUpdateRafRef.current = 0;
+      }
+    };
   }, [updateLayout]);
 
   // When a board arrives (especially in hundredCoop), refs may have been null earlier.
@@ -647,7 +827,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
       cancelAnimationFrame(raf2);
       window.clearTimeout(t);
     };
-  }, [updateLayout, gameState.grid.length, gameState.difficulty]);
+  }, [updateLayout, gameState.grid.length, gameState.boardCols, gameState.boardRows, gameState.difficulty, soloBottomControlsPx, showAnswers, boardParticipants.length]);
 
   const isPointOnSegment = (px: number, py: number, start: Point, end: Point) => {
     const dx = end.x - start.x;
@@ -707,16 +887,22 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
       const currentLayout = layoutRef.current;
       const currentGameState = gameStateRef.current;
-      const { cellSize, padding, boardSize } = currentLayout;
+      const { cellSize, padding, boardWidth, boardHeight } = currentLayout;
       // Mobile layout can be 0 for a moment while UI settles.
       // Keep the RAF loop alive so we recover automatically.
-      if (cellSize <= 0 || boardSize <= 0) {
+      if (cellSize <= 0 || boardWidth <= 0 || boardHeight <= 0) {
         requestRef.current = requestAnimationFrame(draw);
         return;
       }
 
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, boardSize, boardSize);
+    const paletteAmber400 = rkCssColor('--rk-amber-400', 'rgb(251 191 36)');
+    const paletteOrange700 = rkCssColor('--rk-orange-700', 'rgb(194 65 12)');
+    const paletteSlate800 = rkCssColor('--rk-slate-800', 'rgb(30 41 59)');
+    const paletteWhite = rkCssColor('--rk-white', 'rgb(255 255 255)');
+    const paletteGlyphStrokeOnFound = rkCssColor('--rk-board-glyph-stroke-on-found', 'rgb(15 23 42 / 0.32)');
+    const paletteGlyphStrokeOnReveal = rkCssColor('--rk-board-glyph-stroke-on-reveal', 'rgb(255 255 255 / 0.92)');
+    ctx.fillStyle = paletteWhite;
+    ctx.fillRect(0, 0, boardWidth, boardHeight);
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -727,10 +913,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
     const ribbonThickness = cellSize * 0.85;
     const ribbonExtension = 0;
-
-    // 1. Layer: Background
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, boardSize, boardSize);
 
     // 2. Layer: Correct Bands (Thick Strikethrough)
       currentGameState.foundWords.forEach(fw => {
@@ -781,8 +963,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
         : 1;
 
       ctx.globalAlpha = isPulsing ? (0.4 + pulse * 0.5) : 0.8; 
-      ctx.fillStyle = '#fbbf24'; // Amber-400
-      ctx.strokeStyle = '#ffffff';
+      ctx.fillStyle = paletteAmber400;
+      ctx.strokeStyle = paletteWhite;
       ctx.lineWidth = 3;
 
       const dx = hint.end.x - hint.start.x;
@@ -861,21 +1043,21 @@ const GameScreen: React.FC<GameScreenProps> = ({
         const strokeW = Math.max(2, displayFontSize * 0.1);
 
         if (isFound) {
-          ctx.fillStyle = '#FFFFFF';
+          ctx.fillStyle = paletteWhite;
           ctx.lineWidth = strokeW;
-          ctx.strokeStyle = 'rgba(15, 23, 42, 0.32)';
+          ctx.strokeStyle = paletteGlyphStrokeOnFound;
           ctx.lineJoin = 'round';
           ctx.strokeText(displayChar, cx, cy);
           ctx.fillText(displayChar, cx, cy);
         } else if (revealAnswers && cellOnAnyPlacedOccurrence(x, y)) {
-          ctx.fillStyle = '#c2410c';
+          ctx.fillStyle = paletteOrange700;
           ctx.lineWidth = Math.max(1.5, displayFontSize * 0.07);
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+          ctx.strokeStyle = paletteGlyphStrokeOnReveal;
           ctx.lineJoin = 'round';
           ctx.strokeText(displayChar, cx, cy);
           ctx.fillText(displayChar, cx, cy);
         } else {
-          ctx.fillStyle = 'rgb(30, 41, 59)';
+          ctx.fillStyle = paletteSlate800;
           ctx.fillText(displayChar, cx, cy);
         }
       });
@@ -886,7 +1068,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     if (sel.start && sel.end) {
       ctx.save();
       ctx.globalAlpha = 0.6;
-      ctx.fillStyle = '#00c874';
+      ctx.fillStyle = rkResolvedAccentPrimary();
 
       const dx = sel.end.x - sel.start.x;
       const dy = sel.end.y - sel.start.y;
@@ -937,32 +1119,39 @@ const GameScreen: React.FC<GameScreenProps> = ({
   // みんなであそぶは「出現座標（occurrence）」で数える方が安定（同じ単語が複数回出る/拾う）。
   const countByOccurrence = !!hundredCoop;
   const isKotobaHiroi = !!hundredCoop && gameState.category?.category === 'pickup';
-  const occurrenceKey = React.useCallback((start: Point, end: Point) => {
-    return `${start.x},${start.y}-${end.x},${end.y}`;
-  }, []);
 
-  // ことば拾いは「出現回数」をカウント（同じ単語を何回も拾う）
+  const gridCols = React.useMemo(
+    () =>
+      resolveBoardCols({
+        boardCols: gameState.boardCols,
+        boardSize: gameState.difficulty,
+        grid: gameState.grid,
+      }),
+    [gameState.boardCols, gameState.difficulty, gameState.grid],
+  );
+  const gridRows = React.useMemo(
+    () =>
+      resolveBoardRows({
+        boardRows: gameState.boardRows,
+        boardSize: gameState.difficulty,
+        grid: gameState.grid,
+      }),
+    [gameState.boardRows, gameState.difficulty, gameState.grid],
+  );
+  const isRectBoard = gridCols !== gridRows;
+
+  // ことば拾いは「出現回数」をカウント（同じ単語を何回も拾う）。方向スキャンの重複は1マス1回。
   const foundCount = React.useMemo(() => {
     if (!countByOccurrence) {
       // ソロ等: 「単語」単位でカウント（同じ単語が盤面に複数あっても 1つ見つければ正解）
       return new Set(gameState.foundWords.map((fw) => fw.word)).size;
     }
-    const keys = new Set<string>();
-    gameState.foundWords.forEach((fw) => {
-      keys.add(occurrenceKey(fw.start, fw.end));
-    });
-    return keys.size;
-  }, [gameState.foundWords, countByOccurrence, occurrenceKey]);
+    return countUniqueFoundOccurrences(gameState.foundWords);
+  }, [gameState.foundWords, countByOccurrence]);
 
   const totalCount = React.useMemo(() => {
     if (!countByOccurrence) return gameState.placedWords.length;
-    // みんなであそぶ: 出現数を答え数として扱う（表示と一致させる）
-    let n = 0;
-    gameState.placedWords.forEach((pw: any) => {
-      const occs = pw && Array.isArray(pw.occurrences) ? pw.occurrences : [];
-      n += occs.length;
-    });
-    return n;
+    return countPlacedWordOccurrences(gameState.placedWords);
   }, [gameState.placedWords, countByOccurrence]);
 
   // Safety: never show "8/7" etc even if data gets temporarily inconsistent.
@@ -972,8 +1161,35 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return Math.min(foundCount, totalCount);
   }, [foundCount, totalCount]);
 
+  // Firestore 同期が落ち着いてから「参加時点の found 数」を baseline に固定
+  useEffect(() => {
+    if (!gameState.grid?.length) return;
+    if (joinedFoundBaselineRef.current !== null) return;
+
+    joinedBaselineTimerRef.current = window.setTimeout(() => {
+      joinedFoundBaselineRef.current = safeFoundCount;
+      lastFoundWordsCount.current = gameState.foundWords.length;
+      joinedBaselineTimerRef.current = null;
+    }, 800);
+
+    return () => {
+      if (joinedBaselineTimerRef.current != null) {
+        window.clearTimeout(joinedBaselineTimerRef.current);
+        joinedBaselineTimerRef.current = null;
+      }
+    };
+  }, [
+    gameState.actualSeed,
+    gameState.grid.length,
+    gameState.placedWords.length,
+    gameState.difficulty,
+    safeFoundCount,
+    gameState.foundWords.length,
+  ]);
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if (isFinished || startCountdown > 0) return;
+    audioService.noteUserGesture();
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
     setHintWord(null);
@@ -981,7 +1197,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     if (!rect) return;
     const x = Math.floor((e.clientX - rect.left - layout.padding) / layout.cellSize);
     const y = Math.floor((e.clientY - rect.top - layout.padding) / layout.cellSize);
-    if (x >= 0 && x < gameState.difficulty && y >= 0 && y < gameState.difficulty) {
+    if (x >= 0 && x < gridCols && y >= 0 && y < gridRows) {
       const point = { x, y };
       selectionRef.current = { start: point, end: point };
       setActiveSelection({ start: point, end: point });
@@ -996,7 +1212,18 @@ const GameScreen: React.FC<GameScreenProps> = ({
     if (!rect) return;
     const x = Math.floor((e.clientX - rect.left - layout.padding) / layout.cellSize);
     const y = Math.floor((e.clientY - rect.top - layout.padding) / layout.cellSize);
-    if (x >= 0 && x < gameState.difficulty && y >= 0 && y < gameState.difficulty) {
+    const gs = gameStateRef.current;
+    const cols = resolveBoardCols({
+      boardCols: gs.boardCols,
+      boardSize: gs.difficulty,
+      grid: gs.grid,
+    });
+    const rows = resolveBoardRows({
+      boardRows: gs.boardRows,
+      boardSize: gs.difficulty,
+      grid: gs.grid,
+    });
+    if (x >= 0 && x < cols && y >= 0 && y < rows) {
       const newEnd = { x, y };
       const dx = newEnd.x - selectionRef.current.start.x;
       const dy = newEnd.y - selectionRef.current.start.y;
@@ -1005,7 +1232,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
         setActiveSelection({ ...selectionRef.current });
       }
     }
-  }, [layout, gameState.difficulty]);
+  }, [layout, gridCols, gridRows]);
 
   const handlePointerUp = useCallback(() => {
     forceDrawRef.current = true;
@@ -1089,8 +1316,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
           const py =
             ((occ.start.y + occ.end.y) / 2) * layout.cellSize + layout.cellSize / 2 + layout.padding;
 
-          const colorIdx = gameState.foundWords.length % BAND_COLORS.length;
-          const color: string = String(BAND_COLORS[colorIdx] || '#000000');
+          const colorIdx = gameState.foundWords.length % rkBandColorCount();
+          const color = rkResolvedBandColor(colorIdx);
 
           for (let i = 0; i < 8; i++) particlePool.current.emit(px, py, color);
         }
@@ -1156,6 +1383,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
   );
 
   useEffect(() => {
+    if (!foundProgressAfterJoin(safeFoundCount)) return;
     if (totalCount > 1 && safeFoundCount === totalCount - 1 && !isFinished) {
       setShowLastOneBonus(true);
       audioService.playBonusSound();
@@ -1166,6 +1394,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
   /** 全問クリア直後：ことば探し・みんなであそぶ共通。ラストワンと同系の飛び出し演出（非表示はアニメ終了時） */
   useEffect(() => {
+    if (!foundProgressAfterJoin(safeFoundCount)) return;
     if (totalCount <= 0 || safeFoundCount !== totalCount || isFinished) return;
     setShowLastOneBonus(false);
     setShowClearFlyBonus(true);
@@ -1174,6 +1403,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
   }, [safeFoundCount, totalCount, isFinished]);
 
   useEffect(() => {
+    if (!foundProgressAfterJoin(safeFoundCount)) return;
     if (totalCount <= 0 || safeFoundCount < totalCount || isFinished) return;
 
     const tid = window.setTimeout(() => {
@@ -1184,10 +1414,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
       audioService.playFanfareSound();
       setIsSuccessFlashing(true);
       if (hundredCoop) onHundredRoomFinished?.('cleared');
-
-      window.setTimeout(() => {
-        onShowFullScreenAd(nextConsecutive);
-      }, 1500);
 
       onClear();
 
@@ -1203,10 +1429,20 @@ const GameScreen: React.FC<GameScreenProps> = ({
         message: `${t.logClear}${getCategoryDisplayTitle(String(gs.category?.title || "ことば探し"), language, gs.isKatakana)}`,
         details: { 
           category: String(gs.category?.category || "unknown"), 
-          difficulty: gs.difficulty, 
+          difficulty: gs.difficulty,
+          boardCols: gridCols,
+          boardRows: gridRows,
+          boardLabel: formatBoardDimensions({
+            boardCols: gs.boardCols,
+            boardRows: gs.boardRows,
+            boardSize: gs.difficulty,
+          }),
+          targetWord: gs.targetWord || gs.category?.words?.[0] || '',
+          roomId: hundredCoop ? roomId || undefined : undefined,
           foundCount: safeFoundCount, 
           totalCount: totalCount, 
-          duration: durStr, 
+          duration: durStr,
+          mode: hundredCoop ? 'hundred_pickup' : gs.gameMode || 'normal',
         },
         category: gs.category // Add category object for App.tsx fallback
       });
@@ -1218,15 +1454,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
   }, [safeFoundCount, totalCount, isFinished]);
 
   const handleHint = () => {
+    const normWord = (w: string) => convertToHiragana(String(w ?? '').trim());
+
     const unfoundOccurrences: { word: string; start: Point; end: Point }[] = [];
-    gameState.placedWords.forEach(pw => {
-      pw.occurrences.forEach(occ => {
-        if (!isKotobaHiroi) {
-          if (gameState.foundWords.some((fw) => fw.word === pw.word)) return;
-          unfoundOccurrences.push({ word: pw.word, ...occ });
-          return;
-        }
-        const ok = !gameState.foundWords.some(
+    gameState.placedWords.forEach((pw) => {
+      pw.occurrences.forEach((occ) => {
+        const already = gameState.foundWords.some(
           (fw) =>
             (fw.start.x === occ.start.x &&
               fw.start.y === occ.start.y &&
@@ -1235,32 +1468,39 @@ const GameScreen: React.FC<GameScreenProps> = ({
             (fw.start.x === occ.end.x &&
               fw.start.y === occ.end.y &&
               fw.end.x === occ.start.x &&
-              fw.end.y === occ.start.y)
+              fw.end.y === occ.start.y),
         );
-        if (ok) {
-          // ことば拾い: 「こたえの場所」を教える（その出現全体を帯で強調）
+        if (!already) {
           unfoundOccurrences.push({ word: pw.word, ...occ });
         }
       });
     });
 
-    if (unfoundOccurrences.length === 0) return;
-
-    // 探しもの（pickup）は「探すことば」"だけ" をヒントにする（偶然語へフォールバックしない）
-    const primaryWord = String(gameState.targetWord ?? gameState.category?.words?.[0] ?? '').trim();
-    if (isKotobaHiroi) {
-      const primaryPool = primaryWord ? unfoundOccurrences.filter((x) => x.word === primaryWord) : [];
-      if (primaryPool.length === 0) {
-        showToast('ヒントはもうありません');
-        return;
-      }
-      const randomOcc = primaryPool[Math.floor(Math.random() * primaryPool.length)];
-      vibrate(30);
-      setHintWord({ ...randomOcc, startTime: Date.now() });
-      setTimeout(() => setHintWord(null), 5000);
+    if (unfoundOccurrences.length === 0) {
+      showToast('ヒントはもうありません');
       return;
     }
-    const randomOcc = unfoundOccurrences[Math.floor(Math.random() * unfoundOccurrences.length)];
+
+    // みんなであそぶ / 探しもの: 探すことばだけ（表記ゆれ イチゴ↔いちご も同一扱い）
+    const primaryWord = String(gameState.targetWord ?? gameState.category?.words?.[0] ?? '').trim();
+    const useTargetWordOnly = countByOccurrence || isKotobaHiroi;
+    let pool = unfoundOccurrences;
+    if (useTargetWordOnly && primaryWord) {
+      const primaryNorm = normWord(primaryWord);
+      pool = unfoundOccurrences.filter((x) => normWord(x.word) === primaryNorm);
+    } else if (!useTargetWordOnly) {
+      // ソロ等: 単語単位（1語見つけたら他の出現はヒント対象外）
+      pool = unfoundOccurrences.filter(
+        (x) => !gameState.foundWords.some((fw) => fw.word === x.word),
+      );
+    }
+
+    if (pool.length === 0) {
+      showToast('ヒントはもうありません');
+      return;
+    }
+
+    const randomOcc = pool[Math.floor(Math.random() * pool.length)];
     vibrate(30);
     setHintWord({ ...randomOcc, startTime: Date.now() });
     setTimeout(() => setHintWord(null), 5000);
@@ -1295,72 +1535,40 @@ const GameScreen: React.FC<GameScreenProps> = ({
       <div
         className={`relative flex flex-col h-full w-full items-center justify-center overflow-hidden ${
           hundredCoop
-            ? 'bg-gradient-to-b from-[#efe2d1] via-[#f6ede2] to-[#e7d8c4]'
-            : 'bg-gradient-to-b from-amber-200/95 via-orange-100 to-amber-300/88'
+            ? 'bg-gradient-to-b from-[var(--rk-game-parchment-from)] via-[var(--rk-game-parchment-via)] to-[var(--rk-game-parchment-to)]'
+            : 'rk-bg-game-solo-shell'
         }`}
       >
         <RakudaFloatingBackdrop variant={hundredCoop ? 'minna' : 'kotoba'} />
         <div
           className={`relative z-10 w-16 h-16 border-4 rounded-xl animate-pulse mb-4 ${
-            hundredCoop ? 'border-red-300' : 'border-amber-300'
+            hundredCoop ? 'border-rk-red-300' : 'border-rk-amber-300'
           }`}
         ></div>
-        <p className="relative z-10 font-medium text-slate-700 text-sm">パズルを読み込み中...</p>
-        <p className="relative z-10 text-slate-600 text-xs mt-2">しばらくお待ちください</p>
+        <p className="relative z-10 font-medium text-rk-slate-700 text-sm">パズルを読み込み中...</p>
+        <p className="relative z-10 text-rk-slate-600 text-xs mt-2">しばらくお待ちください</p>
       </div>
     );
   }
 
   const displayEmoji = compactMode ? '' : (userEmoji || '🐫').trim() || '🐫';
+  const kotobaCategoryTitleDisplayed =
+    gameState.gameMode === 'search'
+      ? ''
+      : getCategoryDisplayTitle(String(gameState.category?.title || ''), language, gameState.isKatakana);
+  const kotobaCategoryTitleMultiline = kotobaCategoryTitleDisplayed.includes('\n');
   return (
     <div
-      className={`flex flex-col h-full w-full select-none relative items-center ${
+      className={`flex flex-col h-full min-h-0 w-full select-none relative items-center ${
         hundredCoop
           ? // hundredCoop: reserve bottom banner space too (otherwise hint button can hide under ads)
-            'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)] bg-gradient-to-b from-[#efe2d1] via-[#f6ede2] to-[#e7d8c4]'
-          : // Solo play: allow scrolling so bottom panels never hide behind the fixed ad banner.
-            'overflow-y-auto justify-start pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)) bg-gradient-to-b from-amber-200/95 via-orange-100 to-amber-300/88'
+            'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)] bg-gradient-to-b from-[var(--rk-game-parchment-from)] via-[var(--rk-game-parchment-via)] to-[var(--rk-game-parchment-to)]'
+          : // Solo: flex でヘッダー・盤面・下ボタンを1画面に収める（盤面は mainContentRef 内で縮小）
+            'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)) rk-bg-game-solo-shell'
       }`}
       style={{ paddingTop: hundredCoop ? 4 : 8, paddingBottom: hundredCoop ? 4 : 8, fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
     >
       <RakudaFloatingBackdrop variant={hundredCoop ? 'minna' : 'kotoba'} />
-
-      {showRakudaQr && (
-        <div className="fixed left-1/2 -translate-x-1/2 top-[70px] z-[650] pointer-events-auto">
-          <button
-            type="button"
-            onClick={() => {
-              try {
-                window.open('https://rakuda.coffee/', '_blank', 'noopener,noreferrer');
-              } catch {
-                // ignore
-              }
-            }}
-            className="bg-white/95 border border-slate-200 rounded-2xl shadow-sm px-2 py-1.5 flex items-center gap-2 active:scale-95 transition-transform"
-            title="https://rakuda.coffee/ を開く"
-          >
-            {rakudaQrDataUrl ? (
-              <img
-                src={rakudaQrDataUrl}
-                alt="らくだ珈琲 QRコード"
-                className="w-[60px] h-[60px] rounded-2xl border border-slate-200 bg-white"
-                loading="lazy"
-                decoding="async"
-              />
-            ) : (
-              <div className="w-[60px] h-[60px] rounded-2xl border border-slate-200 bg-slate-50 grid place-items-center">
-                <span className="text-[10px] font-black text-slate-500">QR</span>
-              </div>
-            )}
-            <div className="flex flex-col leading-tight text-left">
-              <div className="text-[10px] font-black text-slate-700">らくだ珈琲</div>
-              <div className="text-[9px] font-medium text-slate-600">
-                {rakudaQrDataUrl ? 'QRで参加ページへ' : 'タップで開く'}
-              </div>
-            </div>
-          </button>
-        </div>
-      )}
 
       <div
         className="pointer-events-none fixed left-0 top-0 -z-10 opacity-0 overflow-hidden"
@@ -1368,64 +1576,25 @@ const GameScreen: React.FC<GameScreenProps> = ({
       >
         <span
           ref={lastFlyMeasureRef}
-          className="inline-block font-black tracking-wide whitespace-nowrap text-orange-500"
+          className="inline-block font-black tracking-wide whitespace-nowrap text-rk-orange-500"
           style={FLY_BANNER_MEASURE_STYLE}
         >
           {t.lastOne}
         </span>
         <span
           ref={clearFlyMeasureRef}
-          className="inline-block font-black tracking-wide whitespace-nowrap text-red-500"
+          className="inline-block font-black tracking-wide whitespace-nowrap text-rk-red-500"
           style={FLY_BANNER_MEASURE_STYLE}
         >
           {t.clearFly}
         </span>
       </div>
 
-      {hundredCoop && !isFinished && (
+      {hundredCoop && !isFinished && isHundredHost && (
         <button
           type="button"
-          className="fixed top-[76px] right-3 z-[600] w-[68px] h-9 md:w-[84px] md:h-10 rounded-xl border-2 border-rose-400 bg-rose-300/95 backdrop-blur text-rose-950 text-xs md:text-sm font-black shadow-sm active:scale-95 transition-transform flex items-center justify-center"
-          onClick={() => {
-            if (!window.confirm('中断してもいいですか？')) return;
-            // ホストが「中断」で離脱した場合、掲示板側に「募集中」が残らないよう募集を閉じる。
-            // `hundred_rooms.publicRecruitId` があれば `hundred_public` を削除し、room を cancelled にする。
-            if (
-              roomId &&
-              hundredRoomHostUid &&
-              currentFirebaseUid &&
-              currentFirebaseUid === hundredRoomHostUid
-            ) {
-              void (async () => {
-                try {
-                  const snap = await getDoc(doc(db, 'hundred_rooms', roomId));
-                  const d = snap.exists() ? (snap.data() as any) : null;
-                  const publicRecruitId = typeof d?.publicRecruitId === 'string' ? d.publicRecruitId : undefined;
-                  await applyHostCancelledHundredGeneration({
-                    roomId,
-                    hundredPublicDocId: publicRecruitId,
-                  });
-                  // Reset ribbons too, so re-entering the same room never resurrects old bands.
-                  await setDoc(
-                    doc(db, 'hundred_rooms', roomId),
-                    { foundWords: [], updatedAt: serverTimestamp() },
-                    { merge: true }
-                  ).catch(() => {});
-                } catch (e) {
-                  console.warn('[GameScreen] interrupt close recruitment failed', e);
-                }
-              })();
-            }
-            // みんなであそぶ: ルームIDを消して退出 → 掲示板へ戻る
-            onClearSeed();
-            requestLeaveGame(() => {
-              if (onBackToBoard) {
-                void onBackToBoard();
-                return;
-              }
-              onBack();
-            });
-          }}
+          className="fixed top-[76px] right-3 z-[600] w-[68px] h-9 md:w-[84px] md:h-10 rounded-xl border-2 border-rk-rose-400 bg-rk-rose-300/95 backdrop-blur text-rk-rose-950 text-xs md:text-sm font-black shadow-sm active:scale-95 transition-transform flex items-center justify-center"
+          onClick={() => setShowHostInterruptConfirm(true)}
         >
           中断
         </button>
@@ -1440,7 +1609,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
             className="absolute top-1/2 -translate-y-1/2 whitespace-nowrap"
             style={{ left: '100%' }}
           >
-            <span className="font-black tracking-wide text-orange-500" style={FLY_BANNER_MEASURE_STYLE}>
+            <span className="font-black tracking-wide text-rk-orange-500" style={FLY_BANNER_MEASURE_STYLE}>
               {t.lastOne}
             </span>
           </motion.div>
@@ -1456,7 +1625,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
             className="absolute top-1/2 -translate-y-1/2 whitespace-nowrap"
             style={{ left: '100%' }}
           >
-            <span className="font-black tracking-wide text-red-500" style={FLY_BANNER_MEASURE_STYLE}>
+            <span className="font-black tracking-wide text-rk-red-500" style={FLY_BANNER_MEASURE_STYLE}>
               {t.clearFly}
             </span>
           </motion.div>
@@ -1466,7 +1635,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
       {floatingTexts.map(ft => (
         <div
           key={ft.id}
-          className="fixed pointer-events-none z-[700] font-medium text-sm text-white whitespace-nowrap"
+          className="fixed pointer-events-none z-[700] font-medium text-sm text-rk-white whitespace-nowrap"
           style={{ left: ft.x, top: ft.y, WebkitTextStroke: `2px ${ft.color}` }}
         >
           {ft.text}
@@ -1476,18 +1645,26 @@ const GameScreen: React.FC<GameScreenProps> = ({
       {isFinished && (
         <div
           className={`fixed inset-0 z-[500] flex items-center justify-center p-4 overflow-hidden backdrop-blur-sm ${
-            hundredCoop ? 'bg-[#efe2d1]/92' : 'bg-amber-200/92'
+            hundredCoop ? 'bg-[color-mix(in_srgb,var(--rk-game-parchment-from)_92%,transparent)]' : 'bg-rk-amber-200/92'
           }`}
         >
+          <button
+            type="button"
+            onClick={leaveFromClearScreen}
+            className={`fixed z-[510] left-3 ${btnGhost} p-2 font-medium active:scale-95 transition-transform`}
+            style={{ top: 'max(0.75rem, env(safe-area-inset-top))' }}
+            aria-label="戻る"
+          >
+            <ChevronLeft size={24} />
+          </button>
           <RakudaFloatingBackdrop variant={hundredCoop ? 'minna' : 'kotoba'} className="z-0" />
           
           <div 
-            ref={clearModalRef} 
             className={`${cardClass} flex flex-col w-[85%] max-w-[450px] relative z-10 max-h-[85vh] overflow-hidden`}
             style={{ paddingTop: '5vh', paddingBottom: '4vh' }}
           >
             <h2 
-              className={`text-sm font-medium text-center leading-none px-4 flex-shrink-0 text-slate-700`}
+              className={`text-sm font-medium text-center leading-none px-4 flex-shrink-0 text-rk-slate-700`}
               style={{ marginBottom: '5vh' }}
             >
               {searchModeTimedOut ? 'タイムアップ！' : (displayConsecutiveClears > 1 ? t.consecutiveClear(displayConsecutiveClears) : t.clear)}
@@ -1495,11 +1672,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
             
             <div className="flex-grow overflow-y-auto custom-scrollbar" style={{ marginBottom: '3vh' }}>
               <div 
-                className="flex flex-col gap-4 font-bold text-slate-700 text-sm w-full"
+                className="flex flex-col gap-4 font-bold text-rk-slate-700 text-sm w-full"
                 style={{ paddingLeft: '15%', paddingRight: '15%' }}
               >
                 {[
-                  { label: 'なまえ：', value: `${displayEmoji}${nickname || userId}` },
+                  { label: 'なまえ：', value: `${displayEmoji}${nickname || userId}`, isSelfName: true },
                   { label: t.categoryLabel, value: (
                     <div className="flex items-center gap-1 justify-end">
                       <span className="max-w-[min(100vw-8rem,220px)] text-right whitespace-pre-line line-clamp-3 break-words">
@@ -1508,20 +1685,20 @@ const GameScreen: React.FC<GameScreenProps> = ({
                           : getCategoryDisplayTitle(String(gameState.category?.title || ''), language, gameState.isKatakana)}
                       </span>
                       {gameState.category?.isKanji && (
-                        <span className="bg-sky-50 text-slate-700 text-[10px] px-2 py-1 rounded-xl border border-sky-200 shadow-sm leading-none">漢字</span>
+                        <span className="bg-rk-sky-50 text-rk-slate-700 text-[10px] px-2 py-1 rounded-xl border border-rk-sky-200 shadow-sm leading-none">漢字</span>
                       )}
                     </div>
                   ), isTruncate: false },
-                  { label: t.difficultyLabel, value: `${gameState.difficulty}×${gameState.difficulty}` },
+                  { label: t.difficultyLabel, value: `${gridCols}×${gridRows}` },
                   { label: 'こたえの数：', value: `${totalCount}個` },
                   { label: t.timeLabel, value: clearTime },
                 ].map((item, idx) => (
                   <div 
                     key={idx} 
-                    className="flex justify-between border-b border-slate-50 pb-1 w-full"
+                    className="flex justify-between border-b border-rk-slate-50 pb-1 w-full"
                   >
-                    <span className="text-slate-400 whitespace-nowrap">{item.label}</span>
-                    <span className={`${item.isTruncate ? 'truncate ml-4' : ''}`}>
+                    <span className="text-rk-slate-400 whitespace-nowrap">{item.label}</span>
+                    <span className={`${(item as { isSelfName?: boolean }).isSelfName ? RK_GATE_NICK_DISPLAY_CLASS : ''} ${item.isTruncate ? 'truncate ml-4' : ''}`}>
                       {item.value}
                     </span>
                   </div>
@@ -1529,7 +1706,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
                 {(isMultiplay || hundredCoop) && (
                   <div className="mt-4 w-full">
-                    <div className="text-[10px] text-slate-400 mb-2 border-b border-slate-100 pb-1 flex justify-between items-center">
+                    <div className="text-[10px] text-rk-slate-400 mb-2 border-b border-rk-slate-100 pb-1 flex justify-between items-center">
                       <span>
                         {hundredCoop
                           ? (language === 'ja' ? '参加者ランキング（見つけた数）' : 'Ranking')
@@ -1538,7 +1715,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                             : (language === 'ja' ? 'ゴール順位表' : 'Leaderboard')}
                       </span>
                       {!isSyncMode && !hundredCoop && (
-                        <span className="animate-pulse text-[10px] bg-emerald-50 text-slate-700 p-2 rounded-xl border border-emerald-200">LIVE</span>
+                        <span className="animate-pulse text-[10px] bg-rk-success-50 text-rk-slate-700 p-2 rounded-xl border border-rk-success-200">LIVE</span>
                       )}
                     </div>
                     <div className="flex flex-col gap-1 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
@@ -1546,9 +1723,9 @@ const GameScreen: React.FC<GameScreenProps> = ({
                         hundredRoster.map((p, idx) => (
                           <div
                             key={p.uid}
-                            className={`flex justify-between text-[11px] ${p.uid === userId ? 'text-emerald-600 font-black' : 'text-slate-600'}`}
+                            className={`flex justify-between text-[11px] ${p.uid === userId ? `${RK_GATE_NICK_DISPLAY_CLASS} font-black` : 'text-rk-slate-600'}`}
                           >
-                            <span className="truncate max-w-[160px]">
+                            <span className={`truncate max-w-[160px] ${p.uid === userId ? RK_GATE_NICK_DISPLAY_CLASS : ''}`}>
                               {idx + 1}. {compactMode ? '' : (p.emoji || '👤')} {p.name}
                             </span>
                             <span className="tabular-nums">{p.foundCount}個</span>
@@ -1557,9 +1734,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       ) : isSyncMode ? (
                         contributors.map(([name, count], idx) => {
                           const player = roomPlayers.find(rp => rp.name === name);
+                          const isSelf = name === (nickname || '').trim() || name === nickname;
                           return (
-                            <div key={idx} className="flex justify-between text-[11px] text-slate-600">
-                              <span className="truncate max-w-[120px]">{idx + 1}. {compactMode ? '' : (player?.emoji || '👤')} {name}</span>
+                            <div key={idx} className="flex justify-between text-[11px] text-rk-slate-600">
+                              <span className={`truncate max-w-[120px] ${isSelf ? RK_GATE_NICK_DISPLAY_CLASS : ''}`}>{idx + 1}. {compactMode ? '' : (player?.emoji || '👤')} {name}</span>
                               <span>{count}個</span>
                             </div>
                           );
@@ -1576,8 +1754,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
                           .map((p, idx) => {
                             const timeStr = p.finishTime ? `${Math.floor(p.finishTime / 60)}:${String(p.finishTime % 60).padStart(2, '0')}` : (language === 'ja' ? 'プレイ中...' : 'Playing...');
                             return (
-                              <div key={p.uid} className={`flex justify-between text-[11px] ${p.uid === userId ? 'text-emerald-600 font-black' : 'text-slate-600'}`}>
-                                <span className="truncate max-w-[120px]">{idx + 1}. {compactMode ? '' : (p.emoji || '👤')} {p.name}</span>
+                              <div key={p.uid} className={`flex justify-between text-[11px] ${p.uid === userId ? `${RK_GATE_NICK_DISPLAY_CLASS} font-black` : 'text-rk-slate-600'}`}>
+                                <span className={`truncate max-w-[120px] ${p.uid === userId ? RK_GATE_NICK_DISPLAY_CLASS : ''}`}>{idx + 1}. {compactMode ? '' : (p.emoji || '👤')} {p.name}</span>
                                 <span className="tabular-nums">{timeStr}</span>
                               </div>
                             );
@@ -1590,322 +1768,36 @@ const GameScreen: React.FC<GameScreenProps> = ({
             </div>
             
             <div className="flex flex-col gap-3 flex-shrink-0" style={{ paddingLeft: '15%', paddingRight: '15%' }}>
-                  <button
-                disabled={submitStatus === 'sending' || submitStatus === 'sent'}
-                onClick={async () => {
-                    if (submitStatus === 'sending' || submitStatus === 'sent') return;
-
-                    // ニックネームが空の場合は提出をブロック
-                    if (!nickname || nickname.trim() === '') {
-                      setSubmitStatus('failed');
-                      setSubmitError('なまえが空です');
-                      window.dispatchEvent(
-                        new CustomEvent('SHOW_TOAST', {
-                          detail: language === 'ja' ? 'なまえを入力してね' : 'Please enter your name',
-                        })
-                      );
-                      showToast(language === 'ja' ? 'なまえを入力してね' : 'Please enter your name');
-                      return;
-                    }
-
-                    setSubmitStatus('sending');
-                    setSubmitError('');
-                    vibrate(10);
-                    
-                    const categoryTitle = getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana);
-                    const difficultyText = `${gameState.difficulty}×${gameState.difficulty}`;
-                    const pointsText = `${safeFoundCount}/${totalCount}`;
-                    const nameText = nickname || userId;
-                    const seedText = seed || "なし";
-
-                    // 検証コードの生成を削除し、ダミーデータを設定
-                    const vCode = "DUMMY_DATA";
-
-                    // フローティングテキスト「提出しました！」の表示
-                    const btnEl = document.activeElement as HTMLElement | null;
-                    const rect = btnEl?.getBoundingClientRect?.();
-                    setFloatingTexts(prev => [
-                      ...prev, 
-                      { 
-                        id: Date.now(), 
-                        text: '提出しました！ ✅', 
-                        x: (rect?.left ?? window.innerWidth / 2) + (rect?.width ?? 0) / 2,
-                        y: (rect?.top ?? 120) - 20,
-                        life: 2, 
-                        color: '#3b82f6'
-                      }
-                    ]);
-
-                    try {
-                      const relayPayload = {
-                        seedText,
-                        nameText,
-                        categoryTitle,
-                        difficultyText,
-                        totalCount: String(totalCount),
-                        clearTime,
-                        pointsText,
-                        vCode,
-                      };
-
-                      // 1) Server-side relay (same origin) to avoid tablet/Safari CORS quirks.
-                      // Some deployments (or aggressive SW caches) may return HTML with 200 for /api/*.
-                      // In that case, fall back to direct Google Forms submission (no-cors).
-                      let ok = false;
-                      try {
-                        const r = await fetch('/api/submit-to-teacher', {
-                          method: 'POST',
-                          headers: {
-                            accept: 'application/json',
-                            'content-type': 'application/json',
-                          },
-                          body: JSON.stringify(relayPayload),
-                        });
-                        const ct = (r.headers.get('content-type') || '').toLowerCase();
-                        const json = ct.includes('application/json')
-                          ? ((await r.json().catch(() => null)) as any)
-                          : null;
-                        if (r.ok && json?.ok) ok = true;
-                        if (!ok && !r.ok) {
-                          throw new Error(json?.error || `http ${r.status}`);
-                        }
-                      } catch (e) {
-                        // ignore and try fallback
-                      }
-
-                      if (!ok) {
-                        // 2) Fallback: submit directly to Google Forms (no-cors).
-                        const formActionUrl =
-                          'https://docs.google.com/forms/d/e/1FAIpQLScgx8M30O6TQTAtDxtxb-ftAs7hv3F5WR53iD79XySoa7HETA/formResponse';
-                        const formData = new URLSearchParams();
-                        formData.append('entry.1199053163', seedText || 'なし');
-                        formData.append('entry.372020919', nameText);
-                        formData.append('entry.2126071547', categoryTitle);
-                        formData.append('entry.1550339233', difficultyText);
-                        formData.append('entry.92185271', String(totalCount ?? ''));
-                        formData.append('entry.458856475', clearTime);
-                        formData.append('entry.2094453691', pointsText);
-                        formData.append('entry.390053549', vCode);
-
-                        await fetch(formActionUrl, {
-                          method: 'POST',
-                          mode: 'no-cors',
-                          headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-                          body: formData.toString(),
-                        });
-                        // no-cors returns an opaque response; if fetch resolves, treat as success.
-                        ok = true;
-                      }
-
-                      if (!ok) throw new Error('submit failed');
-                      if (typeof window !== 'undefined' && (window as any).gtag) {
-                        (window as any).gtag('event', 'submit_to_teacher', {
-                          'event_category': 'engagement',
-                          'event_label': nickname
-                        });
-                      }
-                      setSubmitStatus('sent');
-                      // 画面がモーダルで覆われても見えるように、グローバルToastにも流す
-                      window.dispatchEvent(
-                        new CustomEvent('SHOW_TOAST', {
-                          detail: language === 'ja' ? 'らくだ先生に提出しました！' : 'Submitted to teacher!',
-                        })
-                      );
-                      showToast(language === 'ja' ? "らくだ先生に提出しました！" : "Submitted to teacher!");
-                      onClearSeed(); // 合言葉を消去
-                    } catch (err) {
-                      console.error("Submission error:", err);
-                      setSubmitStatus('failed');
-                      const raw =
-                        err instanceof Error
-                          ? err.message
-                          : typeof err === 'string'
-                            ? err
-                            : '';
-                      const msg = String(raw || String(err) || 'network error').trim() || 'network error';
-                      setSubmitError(msg);
-                      window.dispatchEvent(
-                        new CustomEvent('SHOW_TOAST', {
-                          detail: language === 'ja'
-                            ? `提出に失敗しました（${msg}）`
-                            : `Submit failed (${msg})`,
-                        })
-                      );
-                    }
-                  }}
-                  className={`${btnPrimary} w-full h-11 flex items-center justify-center gap-1`}
-                >
-                  <span className="text-sm">📝</span>
-                  {t.submitToTeacher}
-                </button>
-                {submitStatus !== 'idle' ? (
-                  <div className="text-[11px] font-bold text-center">
-                    {submitStatus === 'sending' ? (
-                      <span className="text-slate-600">送信中…</span>
-                    ) : submitStatus === 'sent' ? (
-                      <span className="text-emerald-700">送信しました</span>
-                    ) : (
-                      <span className="text-rose-700">
-                        送信に失敗しました{submitError ? `（${submitError}）` : ''}
-                      </span>
-                    )}
-                  </div>
-                ) : null}
-              
-              <div className="flex gap-2">
-                {!isMultiplay && (
-                  <button
-                    onClick={() => {
-                      vibrate(10);
-                      setIsFinished(false);
-                      onNextProblem();
-                    }}
-                    className={`${btnPrimary} flex-grow h-11`}
-                  >
-                    {t.nextProblem}
-                  </button>
-                )}
+              {hundredCoop && isKotobaHiroi && isHundredHost && onRakudaRoboReplay ? (
                 <button
-                  onClick={() => {
-                    vibrate(10);
-                    requestLeaveGame(() => {
-                      if (hundredCoop && onBackToBoard) {
-                        // みんなであそぶ（掲示板）へ戻るときは、ゲーム状態を閉じてから遷移する
-                        onClearSeed();
-                        void onBackToBoard();
-                        return;
-                      }
-                      // ことば探し（通常）は「問題一覧」へ戻る
-                      onBack();
-                    });
-                  }}
-                  className={`${btnGhost} flex-grow h-11`}
+                  type="button"
+                  disabled={roboReplayBusy}
+                  onClick={() => void handleRakudaRoboReplay()}
+                  className={`${btnPrimary} w-full h-11`}
                 >
-                  {hundredCoop ? '掲示板へもどる' : t.back}
+                  {roboReplayBusy ? '準備中…' : `${RAKUDA_ROBO_EMOJI} らくだロボでもう一回`}
                 </button>
-                <button 
-                  onClick={async () => {
-                    const resultTitle = searchModeTimedOut ? 'タイムアップ！' : (consecutiveClears > 1 ? t.consecutiveClear(consecutiveClears) : t.clear);
-                    const foundWordsList = gameState.foundWords.map(fw => fw.word).join(' ');
-                    const contributorText = isMultiplay && contributors.length > 0 
-                      ? `\n見つけた人:\n${contributors.map(([name, count]) => `${name}: ${count}個`).join('\n')}`
-                      : '';
-                    const shareText = `ことば探し Pro\n${resultTitle}\n\n` +
-                      `なまえ: ${nickname || userId}\n` +
-                      `カテゴリー: ${getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana)}\n` +
-                      `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
-                      `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
-                      `じかん: ${clearTime}\n` +
-                      `見つけた言葉:\n${foundWordsList}${contributorText}\n\n` +
-                      `${getPublicUrl()}\n#ことば探し #WORDSEARCH`;
-
-                    try {
-                      await navigator.clipboard.writeText(shareText);
-                      showToast(language === 'ja' ? '結果をコピーしました！' : 'Copied to clipboard!');
-                    } catch (e) {
-                      console.error('Copy failed', e);
-                    }
-                  }}
-                  className={`w-11 h-11 flex items-center justify-center bg-white text-slate-700 rounded-xl shadow-sm active:scale-95 transition-transform border border-slate-200 flex-shrink-0 px-2`}
-                  title="Copy Text"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                </button>
-                <button 
-                  onClick={async () => {
-                    if (!isOnline) return;
-                    
-                    let files: File[] = [];
-                    if (clearModalRef.current) {
-                      try {
-                        const canvas = await html2canvas(clearModalRef.current, {
-                          backgroundColor: '#ffffff',
-                          scale: 2,
-                          logging: false,
-                          useCORS: true,
-                          allowTaint: true
-                        });
-                        
-                        const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
-                        if (blob) {
-                          files = [new File([blob], 'clear_result.png', { type: 'image/png' })];
-                        }
-                      } catch (e) {
-                        console.error('Screenshot failed', e);
-                      }
-                    }
-
-                    const resultTitle = searchModeTimedOut ? 'タイムアップ！' : (consecutiveClears > 1 ? t.consecutiveClear(consecutiveClears) : t.clear);
-                    const foundWordsList = gameState.foundWords.map(fw => fw.word).join(' ');
-                    const contributorText = isMultiplay && contributors.length > 0 
-                      ? `\n見つけた人:\n${contributors.map(([name, count]) => `${name}: ${count}個`).join('\n')}`
-                      : '';
-                    const displaySeed = proCode || seed;
-                    const shareText = `ことば探し Pro\n${resultTitle}\n\n` +
-                      `なまえ: ${nickname || userId}\n` +
-                      `カテゴリー: ${getCategoryDisplayTitle(String(gameState.category?.title || ""), language, gameState.isKatakana)}\n` +
-                      `むつかしさ: ${gameState.difficulty}×${gameState.difficulty}\n` +
-                      `こたえの数: ${safeFoundCount}/${totalCount}個\n` +
-                      `じかん: ${clearTime}\n` +
-                      (displaySeed ? `合言葉: ${displaySeed}\n` : '') +
-                      `見つけた言葉:\n${foundWordsList}${contributorText}\n\n` +
-                      `${getPublicUrl()}\n#ことば探し #WORDSEARCH`;
-
-                    const shareData: any = {
-                      title: 'ことば探し Pro',
-                      text: shareText,
-                      url: getPublicUrl()
-                    };
-
-                    if (files.length > 0 && navigator.canShare && navigator.canShare({ files })) {
-                      shareData.files = files;
-                    }
-
-                    if (navigator.share) {
-                      if (typeof window !== 'undefined' && (window as any).gtag) {
-                        (window as any).gtag('event', 'share', {
-                          'method': 'navigator_share',
-                          'content_type': 'image'
-                        });
-                      }
-                      try { 
-                        await navigator.share(shareData); 
-                      } catch (e) {
-                        if (shareData.files) {
-                          try {
-                            const { files: _, ...textShareData } = shareData;
-                            await navigator.share(textShareData);
-                          } catch (e2) {}
-                        }
-                      }
-                    } else {
-                      try {
-                        await navigator.clipboard.writeText(shareText);
-                        showToast(language === 'ja' ? '結果をコピーしました！' : 'Copied to clipboard!');
-                      } catch (e) {}
-                    }
-                  }} 
-                  className={`w-16 h-11 flex items-center justify-center rounded-xl transition-transform flex-shrink-0 px-4 shadow-sm border border-slate-200
-                    ${isOnline 
-                      ? 'bg-amber-200 text-slate-700 active:scale-95' 
-                      : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
-                >
-                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/></svg>
-                </button>
-              </div>
+              ) : null}
+              <button
+                type="button"
+                onClick={leaveFromClearScreen}
+                className={`${btnGhost} w-full h-11`}
+              >
+                {hundredCoop ? 'ひと言探しにもどる' : '問題一覧にもどる'}
+              </button>
               {hundredCoop && hundredRoster.length > 0 ? (
                 <div className="flex items-center justify-center gap-1.5 mt-1 max-w-[220px] md:max-w-[420px] overflow-hidden">
                   {hundredRoster.slice(0, 10).map((p) => (
                     <span
                       key={p.uid}
                       title={p.name}
-                      className="inline-flex h-7 w-7 md:h-8 md:w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-base md:text-lg shadow-sm"
+                      className="inline-flex h-7 w-7 md:h-8 md:w-8 items-center justify-center rounded-xl border border-rk-slate-200 bg-rk-white text-base md:text-lg shadow-sm"
                     >
                       {compactMode ? '' : p.emoji}
                     </span>
                   ))}
                   {hundredRoster.length > 10 ? (
-                    <span className="text-[10px] font-bold text-slate-600 tabular-nums">+{hundredRoster.length - 10}</span>
+                    <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">+{hundredRoster.length - 10}</span>
                   ) : null}
                 </div>
               ) : null}
@@ -1914,24 +1806,31 @@ const GameScreen: React.FC<GameScreenProps> = ({
         </div>
       )}
 
-      <div className={`flex flex-col gap-2 px-4 w-full max-w-2xl flex-shrink-0 ${hundredCoop ? 'mb-0.5' : ''}`}>
+      <div className={`flex flex-col gap-2 px-4 w-full max-w-2xl flex-shrink-0 min-h-0 ${hundredCoop ? 'mb-0.5' : ''}`}>
         <div className={`flex justify-between items-center relative ${hundredCoop ? 'min-h-[3.6rem] md:min-h-[4.4rem]' : 'min-h-[4.5rem] md:min-h-[6rem]'}`}>
-          <button
+          <RK19QuietRoomBackButton
             onClick={() => {
               vibrate(10);
-              requestLeaveGame(onBack);
+              if (typeof onBackToTitle === 'function') {
+                void Promise.resolve(onBackToTitle());
+              } else {
+                onBack();
+              }
             }}
-            className={`${hundredCoop ? 'w-9 h-9 md:w-11 md:h-11' : 'w-10 h-10 md:w-14 md:h-14'} flex items-center justify-center ${btnGhost} flex-shrink-0 z-10`}
-          >
-            <ChevronLeft size={32} strokeWidth={4} />
-          </button>
-          
-          <div className={`absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-2 bg-white rounded-xl border border-slate-200 shadow-sm z-0 min-w-[220px] md:min-w-[340px] max-w-[calc(100%-6rem)] ${hundredCoop ? 'px-2.5 py-1.5' : 'px-3 py-2'} ${hundredCoop && rakudaQrDataUrl ? 'h-auto' : 'h-full'}`}>
+          />
+
+          <div className={`absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-2 bg-rk-white rounded-xl border border-rk-slate-200 shadow-sm z-0 min-w-[220px] md:min-w-[340px] max-w-[calc(100%-7rem)] md:max-w-[calc(100%-8rem)] h-full ${hundredCoop ? 'px-2.5 py-1.5' : 'px-3 py-2'}`}>
             <span className="text-[21px] leading-none">{gameState.category?.emoji}</span>
             <div className="flex flex-col items-center justify-center text-center">
               <div className="flex items-center justify-center gap-1">
                 <h3
-                  className={`${pageTopHeadingClass} text-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-[220px] md:max-w-[420px]`}
+                  className={
+                    gameState.gameMode === 'search'
+                      ? `${pageTopHeadingClass} text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-[220px] md:max-w-[420px]`
+                      : kotobaCategoryTitleMultiline
+                        ? 'text-xl md:text-2xl font-black tracking-tight leading-snug text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-[220px] md:max-w-[420px]'
+                        : `${pageTopHeadingClass} text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-[220px] md:max-w-[420px]`
+                  }
                 >
                   {gameState.gameMode === 'search' ? (
                     <>
@@ -1942,21 +1841,21 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       <span className="hidden md:inline">「{displaySearchWord}」をさがせ！</span>
                     </>
                   ) : (
-                    getCategoryDisplayTitle(String(gameState.category?.title || ''), language, gameState.isKatakana)
+                    kotobaCategoryTitleDisplayed
                   )}
                 </h3>
                 {gameState.category?.isKanji && (
-                  <span className="bg-sky-50 text-slate-700 text-[10px] px-2 py-1 rounded-xl border border-sky-200 flex-shrink-0 shadow-sm">漢字</span>
+                  <span className="bg-rk-sky-50 text-rk-slate-700 text-[10px] px-2 py-1 rounded-xl border border-rk-sky-200 flex-shrink-0 shadow-sm">漢字</span>
                 )}
               </div>
               <div className={`flex items-center justify-center gap-2 ${hundredCoop ? 'mt-0.5' : 'mt-1'}`}>
-                <span className={`${hundredCoop ? 'text-[14px] md:text-[18px]' : 'text-[16px] md:text-[21px]'} font-black text-slate-700 tabular-nums leading-none text-center whitespace-nowrap`}>
-                  {gameState.difficulty}×{gameState.difficulty} {safeFoundCount}/{totalCount}
+                <span className={`${hundredCoop ? 'text-[14px] md:text-[18px]' : 'text-[16px] md:text-[21px]'} font-black text-rk-slate-700 tabular-nums leading-none text-center whitespace-nowrap`}>
+                  {gridCols}×{gridRows} {safeFoundCount}/{totalCount}
                 </span>
                 {gameState.gameMode === 'search' && gameState.category?.category === 'search' && (
                   <div className="flex flex-col items-center ml-2 min-w-[100px] md:min-w-[150px]">
                     <div className="flex items-center gap-1 mb-1">
-                      <span className="text-base font-bold text-slate-700 bg-amber-50 px-3 py-2 rounded-xl border border-amber-200 shadow-sm leading-none">
+                      <span className="text-base font-bold text-rk-slate-700 bg-rk-amber-50 px-3 py-2 rounded-xl border border-rk-amber-200 shadow-sm leading-none">
                         {displaySearchWord}
                       </span>
                     </div>
@@ -1966,18 +1865,18 @@ const GameScreen: React.FC<GameScreenProps> = ({
                 {isMultiplay && (proCode || displayRoomCode) && (
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-1">
-                      <div className={`p-2 rounded-xl text-[10px] font-medium flex items-center gap-1 shadow-sm border ${isSyncMode ? 'bg-sky-50 text-slate-700 border-sky-200' : 'bg-amber-50 text-slate-700 border-amber-200'}`}>
+                      <div className={`p-2 rounded-xl text-[10px] font-medium flex items-center gap-1 shadow-sm border ${isSyncMode ? 'bg-rk-sky-50 text-rk-slate-700 border-rk-sky-200' : 'bg-rk-amber-50 text-rk-slate-700 border-rk-amber-200'}`}>
                         <span className="opacity-60">{isSyncMode ? '🤝' : '🏁'}</span>
                         <span>{isSyncMode ? '協力' : '対戦'}</span>
                       </div>
                       {roomPlayers.length > 1 && (
-                        <div className="bg-sky-50 text-slate-700 px-2 py-1 rounded-xl text-[10px] font-medium flex items-center gap-1 shadow-sm border border-sky-200">
+                        <div className="bg-rk-sky-50 text-rk-slate-700 px-2 py-1 rounded-xl text-[10px] font-medium flex items-center gap-1 shadow-sm border border-rk-sky-200">
                           <span className="opacity-60">👤</span>
                           <span>{roomPlayers.length}</span>
                         </div>
                       )}
                     </div>
-                    <div className="bg-slate-50 text-slate-700 p-2 rounded-xl text-[10px] font-medium flex items-center gap-1 border border-slate-200 self-start">
+                    <div className="bg-rk-slate-50 text-rk-slate-700 p-2 rounded-xl text-[10px] font-medium flex items-center gap-1 border border-rk-slate-200 self-start">
                       <span className="opacity-60">🏠</span>
                       <span>{displayRoomCode || proCode}</span>
                     </div>
@@ -1988,11 +1887,45 @@ const GameScreen: React.FC<GameScreenProps> = ({
             </div>
           </div>
 
+          <div className="w-12 h-12 flex-shrink-0" aria-hidden />
         </div>
-        <div className="h-1.5 w-full bg-slate-200/50 rounded-xl overflow-hidden border border-slate-200 mt-1">
-          <div className="h-full bg-emerald-200 transition-all duration-500" style={{ width: `${progress}%` }} />
+        <div className="h-1.5 w-full bg-rk-slate-200/50 rounded-xl overflow-hidden border border-rk-slate-200 mt-1">
+          <div className="h-full bg-rk-success-200 transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
       </div>
+
+      {!isFinished && boardParticipants.length > 0 ? (
+        <div
+          className={`mx-auto w-full max-w-2xl flex-shrink-0 flex items-center justify-center ${hundredCoop ? 'px-2 mb-1' : 'px-4 mb-2'}`}
+          aria-label="参加者"
+        >
+          <div
+            className="flex items-center justify-center gap-1.5 flex-wrap"
+            style={{ width: layout.boardWidth || layout.boardSize ? `${layout.boardWidth || layout.boardSize}px` : '100%', maxWidth: '100%' }}
+          >
+            {boardParticipants.slice(0, 12).map((p) => {
+              const isSelf =
+                hundredCoop
+                  ? !!currentFirebaseUid && p.uid === currentFirebaseUid
+                  : !!userId && p.uid === userId;
+              return (
+                <span
+                  key={p.uid}
+                  title={p.name}
+                  className={`inline-flex h-7 w-7 md:h-8 md:w-8 items-center justify-center rounded-xl border bg-rk-white text-base md:text-lg shadow-sm ${
+                    isSelf ? 'border-rk-primary ring-2 ring-rk-primary/40' : 'border-rk-slate-200'
+                  }`}
+                >
+                  {p.emoji}
+                </span>
+              );
+            })}
+            {boardParticipants.length > 12 ? (
+              <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">+{boardParticipants.length - 12}</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {/* Game Over Overlay for Multiplay */}
       <AnimatePresence>
@@ -2001,7 +1934,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-amber-200/90 backdrop-blur-sm p-4"
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-rk-amber-200/90 backdrop-blur-sm p-4"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
@@ -2009,23 +1942,23 @@ const GameScreen: React.FC<GameScreenProps> = ({
               className={`${cardClass} w-full max-w-md text-center`}
             >
               <div className="text-sm mb-3">🏁</div>
-              <h2 className="text-sm font-medium text-slate-700 mb-2">
+              <h2 className="text-sm font-medium text-rk-slate-700 mb-2">
                 {language === 'ja' ? '終了！' : 'Game Over!'}
               </h2>
-              <p className="text-xs text-slate-600 mb-3">
+              <p className="text-xs text-rk-slate-600 mb-3">
                 {language === 'ja' ? '全員がクリアしました！' : 'Everyone has finished!'}
               </p>
 
               <div className="space-y-2 mb-3">
                 {roomPlayers.sort((a, b) => (a.finishTime || 999) - (b.finishTime || 999)).map((player, i) => (
-                  <div key={player.uid} className="flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div key={player.uid} className="flex items-center justify-between bg-rk-slate-50 p-3 rounded-xl border border-rk-slate-200">
                     <div className="flex items-center gap-3">
-                      <span className="w-8 h-8 flex items-center justify-center bg-emerald-50 text-slate-700 rounded-xl border border-emerald-200 font-medium text-xs">
+                      <span className="w-8 h-8 flex items-center justify-center bg-rk-success-50 text-rk-slate-700 rounded-xl border border-rk-success-200 font-medium text-xs">
                         {i + 1}
                       </span>
-                      <span className="font-medium text-slate-700 text-sm">{player.name}</span>
+                      <span className={`font-medium text-sm ${player.uid === userId ? RK_GATE_NICK_DISPLAY_CLASS : 'text-rk-slate-700'}`}>{player.name}</span>
                     </div>
-                    <span className="font-mono font-medium text-slate-700 text-sm">
+                    <span className="font-mono font-medium text-rk-slate-700 text-sm">
                       {player.finishTime ? `${player.finishTime}s` : '--'}
                     </span>
                   </div>
@@ -2043,34 +1976,111 @@ const GameScreen: React.FC<GameScreenProps> = ({
         )}
       </AnimatePresence>
 
+      <AnimatePresence>
+        {showHostInterruptConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[900] flex items-center justify-center bg-rk-slate-900/45 p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hundred-host-interrupt-title"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 8 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 8 }}
+              className="max-w-[min(92vw,24rem)] rounded-2xl border-4 border-rk-rose-200 bg-rk-white px-6 py-5 shadow-2xl text-center"
+            >
+              <p id="hundred-host-interrupt-title" className="text-base font-black text-rk-slate-800 leading-snug">
+                中断してもいいですか？
+              </p>
+              <p className="mt-2 text-xs font-medium text-rk-slate-600 leading-relaxed">
+                他の参加者にも知らせることになります
+              </p>
+              <div className="mt-4 flex flex-col gap-2">
+                <button
+                  type="button"
+                  disabled={hostInterruptInFlight}
+                  className="min-h-[44px] px-4 rounded-xl bg-rk-rose-500 text-rk-white text-sm font-black shadow-sm active:scale-[0.98] transition-transform disabled:opacity-60"
+                  onClick={() => void performHostInterrupt()}
+                >
+                  {hostInterruptInFlight ? '中断中…' : '中断する'}
+                </button>
+                <button
+                  type="button"
+                  disabled={hostInterruptInFlight}
+                  className="min-h-[44px] px-4 rounded-xl border-2 border-rk-slate-200 bg-rk-white text-rk-slate-800 text-sm font-bold active:scale-[0.98] transition-transform disabled:opacity-60"
+                  onClick={() => setShowHostInterruptConfirm(false)}
+                >
+                  キャンセル
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showGuestInterruptedModal ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[900] flex items-center justify-center bg-rk-slate-900/45 p-6"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hundred-guest-interrupt-title"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 8 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 8 }}
+              className="max-w-[min(92vw,24rem)] rounded-2xl border-4 border-rk-amber-300 bg-rk-amber-50 px-6 py-5 shadow-2xl text-center"
+            >
+              <p id="hundred-guest-interrupt-title" className="text-base font-black text-rk-amber-950 leading-snug">
+                ホストによりゲームは中断されました
+              </p>
+              <button
+                type="button"
+                className="mt-4 min-h-[44px] w-full px-4 rounded-xl bg-rk-amber-500 text-rk-white text-sm font-black shadow-sm active:scale-[0.98] transition-transform"
+                onClick={() => {
+                  setShowGuestInterruptedModal(false);
+                  goToRecruitBoard();
+                }}
+              >
+                ひと言探しへ
+              </button>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       <div
         ref={mainContentRef}
-        className={`z-10 flex-grow flex items-center justify-center w-full overflow-hidden ${hundredCoop ? 'px-2' : 'px-4'}`}
+        className={`z-10 flex-1 min-h-0 min-w-0 flex items-center justify-center w-full ${
+          isRectBoard ? 'overflow-y-auto overflow-x-hidden' : 'overflow-hidden'
+        } ${hundredCoop ? 'px-2' : 'px-4'}`}
       >
           <div 
           ref={containerRef} 
-            className="relative bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden touch-none flex items-center justify-center" 
+            className="relative bg-rk-white rounded-xl shadow-sm border border-rk-slate-200 overflow-hidden touch-none flex items-center justify-center shrink-0 my-1" 
           style={{
-            width: layout.boardSize || 'auto',
-            height: layout.boardSize || 'auto',
-            // Solo play: when ads exist, the sticky bottom controls can overlap the board.
-            // Reserve space by pushing the board upward.
-            marginBottom:
-              !hundredCoop && !streamMode
-                ? `calc(var(--rk-bottom-banner, 0px) + env(safe-area-inset-bottom) + ${Math.max(0, soloBottomControlsPx - 28) + 8}px)`
-                : 0,
+            width: layout.boardWidth || layout.boardSize || 'auto',
+            height: layout.boardHeight || layout.boardSize || 'auto',
           }} 
         >
           <canvas 
             ref={canvasRef} 
-              className="rounded-xl shadow-sm cursor-crosshair" 
+              className="rounded-xl bg-rk-white shadow-sm cursor-crosshair" 
             onPointerDown={handlePointerDown}
           />
 
           {/* Countdown Overlay */}
           {(startCountdown > 0 || showStartText) && (
-            <div className="absolute inset-0 z-[500] flex items-center justify-center bg-white/30 backdrop-blur-[2px] pointer-events-none">
-              <div className={`font-medium text-slate-700 transition-all duration-300 transform
+            <div className="absolute inset-0 z-[500] flex items-center justify-center bg-rk-white/30 backdrop-blur-[2px] pointer-events-none">
+              <div className={`font-medium text-rk-slate-700 transition-all duration-300 transform
                 ${startCountdown > 0 ? 'text-sm scale-110 animate-pulse' : 'text-sm opacity-0'}
                 ${showStartText ? 'text-sm opacity-100' : ''}`}>
                 {startCountdown > 0 ? startCountdown : (showStartText ? 'GO!' : '')}
@@ -2084,9 +2094,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
         <div
           className="w-full px-4 flex items-center justify-center z-20 flex-shrink-0"
           style={{
-            marginTop: hundredCoop ? '-34px' : '-18px',
-            // Root AppLayout already reserves bottom banner space; avoid pushing the hint too far up.
-            // But in hundredCoop with ads visible, the fixed bottom banner can overlap this button.
             marginBottom: streamMode
               ? 0
               : 'calc(var(--rk-bottom-banner, 0px) + env(safe-area-inset-bottom) + 8px)',
@@ -2094,10 +2101,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
         >
           <button
             onClick={handleHint}
-            className="bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4"
-            style={{ width: layout.boardSize || 'auto' }}
+            className="bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 py-8 min-h-[4.5rem]"
+            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
           >
-            <span className="text-sm">☝️{t.hint}</span>
+            <span className="text-lg leading-snug">☝️{t.hint}</span>
           </button>
         </div>
       )}
@@ -2106,23 +2113,23 @@ const GameScreen: React.FC<GameScreenProps> = ({
       {!isFinished && !hundredCoop && (
         <div
           ref={soloBottomControlsRef}
-          className="w-full px-4 z-50 flex flex-col items-center gap-2 sticky"
+          className="w-full px-4 z-50 flex flex-col items-center gap-2 flex-shrink-0"
           style={{
-            bottom: 'calc(var(--rk-bottom-banner, 0px) + env(safe-area-inset-bottom) + 8px)',
+            paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
           }}
         >
           <button
             onClick={handleHint}
-            className="bg-sky-200 text-slate-700 rounded-xl shadow-sm border border-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-3 py-4"
-            style={{ width: layout.boardSize || 'auto' }}
+            className="bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 py-8 min-h-[4.5rem]"
+            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
           >
-            <span className="text-sm">☝️{t.hint}</span>
+            <span className="text-lg leading-snug">☝️{t.hint}</span>
           </button>
 
           <div
-            className={`bg-emerald-50 text-slate-700 rounded-xl shadow-sm border border-emerald-200 transition-colors relative overflow-hidden flex flex-col items-center w-full
+            className={`bg-rk-success-50 text-rk-slate-700 rounded-xl shadow-sm border border-rk-success-200 transition-colors relative overflow-hidden flex flex-col items-center w-full
               ${showAnswers ? 'max-h-[45vh]' : ''} ${!showAnswers ? 'hover:scale-[1.01] active:scale-[0.99] cursor-pointer' : ''}`}
-            style={{ width: layout.boardSize || 'auto' }}
+            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
             onClick={handleShowAnswers}
           >
             <div className={`w-full h-full flex flex-col items-center justify-center ${showAnswers ? 'p-3' : 'p-0'}`}>
@@ -2132,10 +2139,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     e.stopPropagation();
                     handleShowAnswers();
                   }}
-                  className="w-full flex items-center justify-center gap-2 font-black text-sm active:scale-95 transition-transform px-3 py-4"
+                  className="w-full flex items-center justify-center gap-2 font-black text-lg leading-snug active:scale-95 transition-transform px-4 py-8 min-h-[4.5rem]"
                 >
-                  <span>🔍</span>
-                  <span className="text-sm font-black">{t.showAnswers}</span>
+                  <span aria-hidden>🔍</span>
+                  <span className="font-black">{t.showAnswers}</span>
                 </button>
               ) : (
                 <div className="w-full flex flex-col overflow-hidden">
@@ -2146,22 +2153,22 @@ const GameScreen: React.FC<GameScreenProps> = ({
                           e.stopPropagation();
                           setShowAnswers(false);
                         }}
-                        className="text-[10px] font-medium bg-white text-slate-700 p-2 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors flex items-center gap-1"
+                        className="text-[10px] font-medium bg-rk-white text-rk-slate-700 p-2 rounded-xl border border-rk-slate-200 hover:bg-rk-slate-50 transition-colors flex items-center gap-1"
                       >
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M6 18L18 6M6 6l12 12"/></svg>
                         とじる
                       </button>
-                      <div className="text-[10px] font-medium text-slate-700 tabular-nums bg-white px-2 py-1.5 rounded-xl border border-slate-200 font-black">
+                      <div className="text-[10px] font-medium text-rk-slate-700 tabular-nums bg-rk-white px-2 py-1.5 rounded-xl border border-rk-slate-200 font-black">
                         {safeFoundCount}/{totalCount}
                       </div>
                     </div>
-                    <div className="flex justify-center gap-4 text-[9px] font-black text-slate-600 tracking-tight">
+                    <div className="flex justify-center gap-4 text-[9px] font-black text-rk-slate-600 tracking-tight">
                       <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-600 shadow-sm shrink-0" aria-hidden />
+                        <span className="inline-block w-2.5 h-2.5 rounded-sm bg-rk-success-600 shadow-sm shrink-0" aria-hidden />
                         みつけた
                       </span>
                       <span className="flex items-center gap-1.5">
-                        <span className="inline-block w-2.5 h-2.5 rounded-sm border-2 border-orange-500 bg-orange-100 shrink-0" aria-hidden />
+                        <span className="inline-block w-2.5 h-2.5 rounded-sm border-2 border-rk-orange-500 bg-rk-orange-100 shrink-0" aria-hidden />
                         あと
                       </span>
                     </div>
@@ -2200,10 +2207,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
                               }
                               className={`min-w-[2.5rem] px-2.5 py-2 rounded-xl text-xs font-black transition-all border-2 shadow-sm ${
                                 isAllFound
-                                  ? 'bg-emerald-600 text-white border-emerald-800 shadow-emerald-900/30 cursor-default ring-0'
+                                  ? 'bg-rk-success-600 text-rk-white border-rk-success-800 shadow-rk-success-900/30 cursor-default ring-0'
                                   : isHinting
-                                    ? 'bg-amber-200 text-amber-950 border-amber-500 ring-2 ring-amber-400/90 scale-[1.02]'
-                                    : 'bg-white text-slate-900 border-orange-400 hover:bg-orange-50 hover:border-orange-500 active:scale-[0.98]'
+                                    ? 'bg-rk-amber-200 text-rk-amber-950 border-rk-amber-500 ring-2 ring-rk-amber-400/90 scale-[1.02]'
+                                    : 'bg-rk-white text-rk-slate-900 border-rk-orange-400 hover:bg-rk-orange-50 hover:border-rk-orange-500 active:scale-[0.98]'
                               }`}
                               style={{ lineHeight: '0.8' }}
                             >
