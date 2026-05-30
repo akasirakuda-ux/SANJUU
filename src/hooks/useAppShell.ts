@@ -1194,6 +1194,10 @@ export const useAppShell = () => {
           clearHundredRestoreSession();
           setRenrakuchoInitialPublicScreen('list');
           setRenrakuchoInitialSelectedHundred(null);
+        } else if (pathNorm === '/keijiban' || pathNorm.endsWith('/keijiban')) {
+          // 掲示板直リンク（/keijiban）ではタイムライン優先。待機室・盤面は復元しない
+          setRenrakuchoInitialPublicScreen('list');
+          setRenrakuchoInitialSelectedHundred(null);
         } else {
           const restored = loadHundredRestoreSession();
           setRenrakuchoInitialPublicScreen(restored?.publicScreen ?? 'list');

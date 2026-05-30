@@ -108,6 +108,22 @@ const RESUMABLE_PUBLIC_SCREENS: readonly RenrakuchoPublicScreenState[] = [
   'hundred-board',
 ];
 
+function isKeijibanPathFromWindow(): boolean {
+  try {
+    const path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+    return path === '/keijiban' || path.endsWith('/keijiban');
+  } catch {
+    return false;
+  }
+}
+
+function initialPublicScreenForPath(initial?: RenrakuchoPublicScreenState): RenrakuchoPublicScreenState {
+  const ps = initial ?? 'list';
+  if (!isKeijibanPathFromWindow()) return ps;
+  if (ps === 'hundred-detail' || ps === 'hundred-wait' || ps === 'hundred-board') return 'list';
+  return ps;
+}
+
 interface RenrakuchoProps {
   onBack: () => void;
   nickname: string;
@@ -180,14 +196,16 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   const [activeTab, setActiveTab] = useState<'main' | 'admin'>(() =>
     initialActiveTab === 'admin' ? 'admin' : 'main'
   );
-  const [publicScreen, setPublicScreen] = useState<RenrakuchoPublicScreenState>(initialPublicScreen ?? 'list');
+  const [publicScreen, setPublicScreen] = useState<RenrakuchoPublicScreenState>(() =>
+    initialPublicScreenForPath(initialPublicScreen),
+  );
 
   /** 掲示板一覧表示中だけタイムライン系を購読（待機/盤面では HundredWaitPanel 等に任せ Listen 負荷を抑える） */
   const subscribePublicTimeline = activeTab === 'main' && publicScreen === 'list';
 
   // 選択 state（画面遷移に紐づく）
-  const [selectedHundred, setSelectedHundred] = useState<HundredPublicRecruit | null>(
-    () => initialSelectedHundred ?? null
+  const [selectedHundred, setSelectedHundred] = useState<HundredPublicRecruit | null>(() =>
+    isKeijibanPathFromWindow() ? null : (initialSelectedHundred ?? null),
   );
   /** みんなであそぶ待機・盤面で問題生成中（下部「メッセージを送る」を隠す） */
   const [hundredProblemsGenerating, setHundredProblemsGenerating] = useState(false);
@@ -370,7 +388,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       const data = JSON.parse(raw) as { publicScreen?: string };
       const ps = data?.publicScreen;
       if (typeof ps === 'string' && (RESUMABLE_PUBLIC_SCREENS as readonly string[]).includes(ps)) {
-        setPublicScreen(ps as RenrakuchoPublicScreenState);
+        if (isKeijibanPathFromWindow() && ps !== 'list' && ps !== 'closed') {
+          /* 掲示板直リンクでは待機室へ復帰させない */
+        } else {
+          setPublicScreen(ps as RenrakuchoPublicScreenState);
+        }
       }
       sessionStorage.removeItem(RENRAKU_RESUME_KEY);
     } catch {
