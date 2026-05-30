@@ -11,7 +11,7 @@ import { useMultiplayer } from './useMultiplayer';
 import { handleFirestoreError, stringToSeed, vibrate, encodeProCode, decodeProCode } from '../lib/utils';
 import { MASTER } from '../constants';
 import { audioService } from '../services/audioService';
-import { adService } from '../services/adService';
+import { adService, setInterstitialUiHandler, type GateAdPresentation } from '../services/adService';
 import {
   collection,
   query,
@@ -23,22 +23,59 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { firestoreLikeToMillis, RENRAKU_RECRUIT_TTL_MS } from '../lib/firestoreTime';
-import { isRenrakuEntryVisible } from '../lib/renrakuVisibility';
-import { isRenrakuAdmin } from '../lib/renrakuAdmin';
 import { todayKeyJst } from '../lib/dateKey';
-import { computeStampsFromLogs, migrateStampArrays } from '../lib/stampMigration';
+import {
+  closesGlobalOverlays,
+  computeStampsFromLogs,
+  ensureRenrakuAdminFirestoreAuth,
+  firestoreLikeToMillis,
+  INTERSTITIAL_ARM_MS,
+  INTERSTITIAL_MIN_GAP_MS,
+  isRenrakuAdmin,
+  migrateStampArrays,
+  recordShussekiGamePlay as applyShussekiGamePlayRecord,
+  RAKUDA_HUNDRED_CREATE_FRAGMENT,
+  readLastInterstitialDismissedMs,
+  STOPS_HUB_BGM,
+  suppressesQuietImmersiveGlobalChrome,
+  waitForGoogleSessionRestore,
+  writeLastInterstitialDismissedMs,
+} from '../lib/rakudaHubShell';
 import { useRenrakuchoUnreadBadge } from './useRenrakuchoUnreadBadge';
+import { markHundredRecruitSeenNow, useHundredRecruitHubAlert } from './useHundredRecruitHubAlert';
+import { useReversiRecruitHubAlert } from './useReversiRecruitHubAlert';
 import AppRouter from '../components/AppRouter';
 import type { AppLayoutProps } from '../components/AppLayout';
 import type { AppHeaderProps } from '../components/AppHeader';
-import type { RenrakuchoPublicScreenState } from '../components/Renrakucho/types';
+import type { HundredPublicRecruit, RenrakuchoPublicScreenState } from '../components/Renrakucho/types';
 import {
-  INTERSTITIAL_ARM_MS,
-  INTERSTITIAL_MIN_GAP_MS,
-  readLastInterstitialDismissedMs,
-  writeLastInterstitialDismissedMs,
-} from '../lib/interstitialPolicy';
+  clearHundredRestoreSession,
+  loadHundredRestoreSession,
+  saveHundredRestoreSession,
+} from '../lib/rakudaHundredRestore';
+import { sendGaPageView } from '../lib/initGa';
+import { readRakudaProfileQuery } from '../lib/sanjuuWebOrigin';
+import {
+  activateGreenGateSubscription,
+  applyGateNicknameCssColor,
+  clearRakudaGateChoice,
+  gateAdSequenceForGate,
+  resolveActiveRakudaGate,
+  shouldShowGateSelection,
+  shouldSuppressAdsForGate,
+  syncLocalGreenGateFromServer,
+  writeRakudaGateChoice,
+  type RakudaGateId,
+} from '../lib/rakudaGate';
+import { isGreenGateStripeEnabled } from '../lib/greenGateStripeConfig';
+import { createGreenGateCheckoutSession, syncGreenGateAfterCheckout } from '../lib/greenGateStripeClient';
+import { resolveDonationThanksOnLoad } from '../lib/donationReturn';
+import {
+  cancelSocialPlayAdDeferral,
+  settleSocialPlayAdSession,
+  shouldDeferInterstitialDuringSocialPlay,
+} from '../lib/socialPlayAdSession';
+import { useGreenGateFirestore } from './useGreenGateFirestore';
 
 const RENRAKU_RESUME_KEY = 'rk_renraku_resume';
 
@@ -46,6 +83,9 @@ export const useAppShell = () => {
   const [isEntered, setIsEntered] = useState(true);
   const [notification, setNotification] = useState<string | null>(null);
   const language = 'ja';
+
+  const [showGateSelection, setShowGateSelection] = useState(() => shouldShowGateSelection());
+  const [rakudaGate, setRakudaGate] = useState<RakudaGateId | null>(() => resolveActiveRakudaGate());
 
   /** nickname / userEmoji は useUser 内で保持（word_search_user_v2 と同期）し、AppRouter・Renrakucho へ渡す */
   const {
@@ -60,13 +100,25 @@ export const useAppShell = () => {
     switchAccount,
     createAccount,
   } = useUser();
-  const { firebaseUser, isAuthReady, ensureAuth, handleGoogleLogin } = useAuth(language, setNotification);
-  const { logs, addLog } = useLogs(firebaseUser, handleFirestoreError);
 
-  const isRenrakuAdminUser = useMemo(() => isRenrakuAdmin(firebaseUser), [firebaseUser]);
+  /** 三十募集一覧などから `rkEmoji` / `rkNick` 付きで戻ったとき、未設定なら反映する */
+  useEffect(() => {
+    const { emoji, nickname: urlNick } = readRakudaProfileQuery();
+    if (!emoji || !urlNick) return;
+    if (!(nickname || '').trim()) setNickname(urlNick);
+    if (!(userEmoji || '').trim()) setUserEmoji(emoji);
+  }, [nickname, userEmoji, setNickname, setUserEmoji]);
+
+  const { firebaseUser, effectiveFirebaseUser, isAuthReady, ensureAuth, handleGoogleLogin, handleGoogleLoginViaPopup, handleGoogleLogout } =
+    useAuth(language, setNotification);
+  const authUserForUi = effectiveFirebaseUser ?? firebaseUser;
+  const serverGreenUntilMs = useGreenGateFirestore(authUserForUi?.uid);
+  const stripeGreenEnabled = isGreenGateStripeEnabled();
+  const [greenCheckoutBusy, setGreenCheckoutBusy] = useState(false);
+  const { logs, addLog } = useLogs(authUserForUi, handleFirestoreError);
+
+  const isRenrakuAdminUser = useMemo(() => isRenrakuAdmin(authUserForUi), [authUserForUi]);
   const renrakuchoHasUnread = useRenrakuchoUnreadBadge(isRenrakuAdminUser, isAuthReady);
-
-  const [hasActiveRecruitments, setHasActiveRecruitments] = useState(false);
 
   const [puzzleSizeHintMessage, setPuzzleSizeHintMessage] = useState<string | null>(null);
   const puzzleHintTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -85,6 +137,22 @@ export const useAppShell = () => {
       if (puzzleHintTimeoutRef.current) window.clearTimeout(puzzleHintTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    applyGateNicknameCssColor(rakudaGate);
+  }, [rakudaGate]);
+
+  useEffect(() => {
+    syncLocalGreenGateFromServer(serverGreenUntilMs);
+    const active = resolveActiveRakudaGate(Date.now(), serverGreenUntilMs);
+    setRakudaGate(active);
+    setShowGateSelection(shouldShowGateSelection(Date.now(), serverGreenUntilMs));
+  }, [serverGreenUntilMs]);
+
+  const gateSuppressAds = useMemo(
+    () => shouldSuppressAdsForGate(undefined, serverGreenUntilMs),
+    [rakudaGate, serverGreenUntilMs],
+  );
 
   const {
     screen,
@@ -120,7 +188,7 @@ export const useAppShell = () => {
     hundredRoster,
     hundredRoomHostUid,
     onHundredRoomFinished,
-  } = useGame(user, setUser, nickname, language, setNotification, handleFirestoreError, firebaseUser, isAuthReady, ensureAuth, userEmoji, showPuzzleSizeHint);
+  } = useGame(user, setUser, nickname, language, setNotification, handleFirestoreError, authUserForUi, isAuthReady, ensureAuth, userEmoji, showPuzzleSizeHint);
 
   const [isRoomCreator, setIsRoomCreator] = useState(false);
   const [syncCountdown, setSyncCountdown] = useState(0);
@@ -139,18 +207,19 @@ export const useAppShell = () => {
     roomStatus,
     toggleReady,
     updateRoomStatus,
-  } = useMultiplayer(multiplayerRoomId, nickname, userEmoji, firebaseUser?.uid || null, isRoomCreator);
+  } = useMultiplayer(multiplayerRoomId, nickname, userEmoji, authUserForUi?.uid || null, isRoomCreator);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showDonationThanks, setShowDonationThanks] = useState(false);
   const [showInstructionModal, setShowInstructionModal] = useState(false);
   const [isBgmEnabled, setIsBgmEnabled] = useState(true);
   const isAdVisible = true;
   const setIsAdVisible = useCallback((_visible: boolean) => {
-    // Ads are always on (no user-side hide).
+    // 固定バナー廃止に伴い no-op（連絡帳へ渡す互換のため残す）
   }, []);
   const [isStampCardOpen, setIsStampCardOpen] = useState(false);
-  const [showFullScreenAd, setShowFullScreenAd] = useState(false);
-  /** 2分経過後「次の自然な区切り」で全面広告を出してよい（メモリのみ） */
+  const [gateAdPresentation, setGateAdPresentation] = useState<GateAdPresentation | null>(null);
+  /** 2分経過後「次の自然な区切り」でリワード／全面を出してよい（メモリのみ） */
   const interstitialArmedRef = useRef(false);
   const lastInterstitialDismissedMsRef = useRef(readLastInterstitialDismissedMs());
   const interstitialDismissWaitersRef = useRef<Array<() => void>>([]);
@@ -163,6 +232,8 @@ export const useAppShell = () => {
   const [renrakuchoInitialPublicScreen, setRenrakuchoInitialPublicScreen] = useState<
     RenrakuchoPublicScreenState | undefined
   >(undefined);
+  const [renrakuchoInitialSelectedHundred, setRenrakuchoInitialSelectedHundred] =
+    useState<HundredPublicRecruit | null>(null);
 
   const setShowRenrakucho = useCallback((show: boolean) => {
     if (!show) {
@@ -179,6 +250,20 @@ export const useAppShell = () => {
     }
     setShowRenrakuchoState(show);
   }, []);
+
+  const hundredRecruitHubEnabled =
+    isAuthReady &&
+    (screen === 'seat-selection' || screen === 'slide-puzzle' || screen === 'othello') &&
+    !showRenrakucho;
+  const {
+    hasActiveRecruits: hasActiveRecruitments,
+    hasNewRecruits: hundredRecruitHasNew,
+    markSeen: markHundredRecruitSeen,
+  } = useHundredRecruitHubAlert(hundredRecruitHubEnabled);
+
+  const { hasOpenRecruits: reversiRecruitHasOpen, hasMyHostRecruiting: reversiRecruitHostWaiting } =
+    useReversiRecruitHubAlert(hundredRecruitHubEnabled, authUserForUi?.uid ?? null);
+
   const [clearsCount, setClearsCount] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [recruitMessageId, setRecruitMessageId] = useState<string | null>(null);
@@ -189,6 +274,14 @@ export const useAppShell = () => {
     const search = typeof window !== 'undefined' ? window.location.search : '';
     try {
       const params = new URLSearchParams(search);
+      if (params.get('stream') === '0') {
+        try {
+          window.localStorage.setItem('rk_stream_mode', '0');
+        } catch {
+          /* ignore */
+        }
+        return false;
+      }
       if (params.get('stream') === '1') return true;
     } catch {
       // ignore
@@ -199,6 +292,18 @@ export const useAppShell = () => {
       return false;
     }
   }, []);
+
+  const streamModeRef = useRef(streamMode);
+  streamModeRef.current = streamMode;
+
+  const rakudaGateRef = useRef(rakudaGate);
+  rakudaGateRef.current = rakudaGate;
+
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+
+  const gateAdPresentationRef = useRef(gateAdPresentation);
+  gateAdPresentationRef.current = gateAdPresentation;
 
   // 全面広告: 永続化された「最後に閉じた時刻」で 2 分アームを更新
   useEffect(() => {
@@ -220,41 +325,27 @@ export const useAppShell = () => {
   // GA4: SPA の画面遷移（pushState/replaceState/popstate）でも page_view を送る
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const w = window as any;
-    if (typeof w.gtag !== 'function') return;
+    if (!import.meta.env.VITE_GA_MEASUREMENT_ID?.startsWith('G-')) return;
 
-    const send = () => {
-      try {
-        w.gtag('event', 'page_view', {
-          page_path: window.location.pathname + window.location.search,
-          page_location: window.location.href,
-          page_title: document.title,
-        });
-      } catch {
-        // ignore
-      }
-    };
-
-    // initial
-    send();
+    sendGaPageView();
 
     const origPush = window.history.pushState;
     const origReplace = window.history.replaceState;
-    const wrap = (fn: any) =>
-      function (this: History, ...args: any[]) {
+    const wrap = (fn: typeof window.history.pushState) =>
+      function (this: History, ...args: Parameters<typeof window.history.pushState>) {
         const r = fn.apply(this, args);
-        send();
+        sendGaPageView();
         return r;
       };
 
     try {
-      window.history.pushState = wrap(origPush) as any;
-      window.history.replaceState = wrap(origReplace) as any;
+      window.history.pushState = wrap(origPush);
+      window.history.replaceState = wrap(origReplace);
     } catch {
       // ignore
     }
 
-    const onPop = () => send();
+    const onPop = () => sendGaPageView();
     window.addEventListener('popstate', onPop);
     return () => {
       window.removeEventListener('popstate', onPop);
@@ -315,7 +406,7 @@ export const useAppShell = () => {
    * - read: once on login + occasionally on foreground (min interval)
    * - write: debounced (batch changes into one write)
    */
-  const cloudUid = firebaseUser?.uid ?? null;
+  const cloudUid = authUserForUi?.uid ?? null;
   const [isBanned, setIsBanned] = useState(false);
   const [banUserName, setBanUserName] = useState<string | null>(null);
   const lastCloudPullAtMsRef = useRef(0);
@@ -363,6 +454,10 @@ export const useAppShell = () => {
         const nextPoints = typeof d.totalPoints === 'number' ? d.totalPoints : Number(d.totalPoints) || undefined;
         const nextCompleted = Array.isArray(d.completedDates) ? (d.completedDates as string[]) : undefined;
         const nextSpecial = Array.isArray(d.specialDates) ? (d.specialDates as string[]) : undefined;
+        const nextDaily =
+          d.dailyClearCounts && typeof d.dailyClearCounts === 'object'
+            ? (d.dailyClearCounts as Record<string, number>)
+            : undefined;
 
         setUser((prev: any) => ({
           ...prev,
@@ -371,6 +466,7 @@ export const useAppShell = () => {
           ...(nextPoints !== undefined ? { totalPoints: nextPoints } : {}),
           ...(nextCompleted ? { completedDates: nextCompleted } : {}),
           ...(nextSpecial ? { specialDates: nextSpecial } : {}),
+          ...(nextDaily ? { dailyClearCounts: nextDaily } : {}),
           lastSyncAt: new Date(cloudUpdated).toISOString(),
         }));
         if (reason === 'login') cloudInitialSyncDoneRef.current = true;
@@ -395,6 +491,8 @@ export const useAppShell = () => {
       totalPoints: typeof user.totalPoints === 'number' ? user.totalPoints : 0,
       completedDates: Array.isArray(user.completedDates) ? user.completedDates : [],
       specialDates: Array.isArray(user.specialDates) ? user.specialDates : [],
+      dailyClearCounts:
+        user.dailyClearCounts && typeof user.dailyClearCounts === 'object' ? user.dailyClearCounts : {},
       updatedAtMs: now,
     };
 
@@ -416,7 +514,7 @@ export const useAppShell = () => {
       // allow retry on next change
       lastPushedSnapshotRef.current = '';
     }
-  }, [cloudUid, nickname, userEmoji, user.completedDates, user.nickname, user.specialDates, user.totalPoints, user.userEmoji, setUser]);
+  }, [cloudUid, nickname, userEmoji, user.completedDates, user.dailyClearCounts, user.nickname, user.specialDates, user.totalPoints, user.userEmoji, setUser]);
 
   // Pull once when a real uid becomes available.
   useEffect(() => {
@@ -622,13 +720,26 @@ export const useAppShell = () => {
   useUrlParams(isAuthReady, handleConfirmJoin, startSearchGame, startNewGame);
 
   useEffect(() => {
-    if (screen === 'game') {
-      setShowRenrakucho(false);
-      setShowSettingsModal(false);
-      setShowInstructionModal(false);
-      setIsStampCardOpen(false);
+    if (!closesGlobalOverlays(screen)) return;
+    setShowRenrakucho(false);
+    setShowSettingsModal(false);
+    setShowInstructionModal(false);
+    setIsStampCardOpen(false);
+    setShowInstallGuideModal(false);
+    if (puzzleHintTimeoutRef.current) {
+      window.clearTimeout(puzzleHintTimeoutRef.current);
+      puzzleHintTimeoutRef.current = null;
     }
+    setPuzzleSizeHintMessage(null);
+    setNotification(null);
   }, [screen]);
+
+  /** 静かな没入中はトーストを DOM にも state にも残さない（SHOW_TOAST の取りこぼし） */
+  useEffect(() => {
+    if (!suppressesQuietImmersiveGlobalChrome(screen)) return;
+    if (!notification) return;
+    setNotification(null);
+  }, [screen, notification]);
 
   useEffect(() => {
     if (isMultiplay && roomStatus === 'playing' && screen !== 'game') {
@@ -652,51 +763,52 @@ export const useAppShell = () => {
   }, [isMultiplay, roomStatus, screen, setScreen]);
 
   useEffect(() => {
-    if (screen === 'quiet-room') {
-      audioService.stop();
-    } else if (isBgmEnabled && isEntered) {
-      audioService.start();
+    const cmActive = Boolean(gateAdPresentation) && !streamMode;
+    const quietImmersive = STOPS_HUB_BGM.has(screen);
+
+    if (quietImmersive) {
+      audioService.stopHubBgm();
+      return;
     }
-  }, [screen, isBgmEnabled, isEntered]);
+    if (cmActive) {
+      audioService.pauseHubBgm();
+      return;
+    }
+    if (isBgmEnabled && isEntered) {
+      audioService.resumeHubBgm();
+    } else if (!isBgmEnabled) {
+      audioService.stop();
+    }
+  }, [screen, isBgmEnabled, isEntered, gateAdPresentation, streamMode]);
+
+  /** どの画面でも最初のタップで Web Audio / BGM を解禁（席選択以外でも鳴るように） */
+  useEffect(() => {
+    const unlockAudio = () => {
+      audioService.startFromUserAction();
+    };
+    document.addEventListener('pointerdown', unlockAudio, { capture: true });
+    return () => document.removeEventListener('pointerdown', unlockAudio, { capture: true });
+  }, []);
+
+  useEffect(() => {
+    const onToast = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (typeof detail === 'string' && detail.trim()) {
+        setNotification(detail.trim());
+      }
+    };
+    window.addEventListener('SHOW_TOAST', onToast);
+    return () => window.removeEventListener('SHOW_TOAST', onToast);
+  }, []);
 
   useEffect(() => {
     if (notification) {
-      const timer = setTimeout(() => setNotification(null), 3000);
+      const timer = setTimeout(() => setNotification(null), 6000);
       return () => clearTimeout(timer);
     }
   }, [notification]);
 
-  useEffect(() => {
-    // Lightweight mode: avoid background Firestore subscription on low-memory devices.
-    // We only monitor recruitments while Renrakucho (みんなであそぶ/掲示板) is open.
-    if (!showRenrakucho) {
-      setHasActiveRecruitments(false);
-      return;
-    }
-    const q = query(collection(db, 'renraku_public'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(
-      q,
-      snapshot => {
-        const now = Date.now();
-        const active = snapshot.docs.some((doc) => {
-          const data = doc.data();
-          if (!isRenrakuEntryVisible(data)) return false;
-          if (data.type !== 'recruit' || !data.createdAt) return false;
-          const createdMs = firestoreLikeToMillis(data.createdAt);
-          if (createdMs == null) return false;
-          const expiryTime = createdMs + RENRAKU_RECRUIT_TTL_MS;
-          return now < expiryTime;
-        });
-        setHasActiveRecruitments(active);
-      },
-      error => {
-        console.error('Error monitoring recruitments:', error);
-      }
-    );
-    return () => unsubscribe();
-  }, [showRenrakucho]);
-
-  // Migrate/repair stamp arrays from clear logs (JST date keys).
+  // しゅっせき（スタンプ）配列の修復。ロジックの正は `rakudaHubShell` 経由の stampMigration。
   // - Fixes UTC date-key bug for recent days
   // - Only rewrites the range that logs actually cover; older data remains untouched
   useEffect(() => {
@@ -711,28 +823,32 @@ export const useAppShell = () => {
       const migrated = migrateStampArrays({
         existingCompletedDates: prev.completedDates,
         existingSpecialDates: prev.specialDates,
+        existingDailyClearCounts: prev.dailyClearCounts,
         computedCompletedDates: computed.completedDates,
         computedSpecialDates: computed.specialDates,
+        computedDailyClearCounts: computed.dailyClearCounts,
         computedRange: computed.range,
       });
 
       if (!migrated.changed) return prev;
-      return { ...prev, completedDates: migrated.completedDates, specialDates: migrated.specialDates };
+      return {
+        ...prev,
+        completedDates: migrated.completedDates,
+        specialDates: migrated.specialDates,
+        dailyClearCounts: migrated.dailyClearCounts,
+      };
     });
   }, [isAuthReady, logs, setUser]);
 
-  useEffect(() => {
-    if (isAuthReady) {
-      const today = todayKeyJst();
-      setUser(prev => {
-        const dates = prev.completedDates || [];
-        if (!dates.includes(today)) {
-          return { ...prev, completedDates: [...dates, today] };
-        }
-        return prev;
-      });
-    }
-  }, [isAuthReady, setUser]);
+  const recordShussekiGamePlay = useCallback((): number => {
+    let todayCount = 0;
+    setUser((prev) => {
+      const result = applyShussekiGamePlayRecord(prev);
+      todayCount = result.todayCount;
+      return result.user;
+    });
+    return todayCount;
+  }, [setUser]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -774,16 +890,17 @@ export const useAppShell = () => {
 
   const handleSaveHistory = useCallback(
     (res: any) => {
+      const details = res.details || {
+        category: res.category?.category,
+        difficulty: res.difficulty,
+        seed: res.actualSeed,
+        wordsCount: res.foundWords?.length,
+      };
       addLog(
         res.type || 'game_clear',
         res.tag || 'SUCCESS',
         res.message || (res.category?.title ? `${res.category.title}をクリア！` : 'クリア！'),
-        res.details || {
-          category: res.category?.category,
-          difficulty: res.difficulty,
-          seed: res.actualSeed,
-          wordsCount: res.foundWords?.length,
-        },
+        details,
         res.emoji || res.category?.emoji
       );
     },
@@ -793,7 +910,8 @@ export const useAppShell = () => {
   const handleClear = useCallback(() => {
     setClearsCount(prev => prev + 1);
     handleRecordFinish();
-  }, [handleRecordFinish]);
+    recordShussekiGamePlay();
+  }, [handleRecordFinish, recordShussekiGamePlay]);
 
   const flushInterstitialDismissWaiter = useCallback(() => {
     const q = interstitialDismissWaitersRef.current;
@@ -812,16 +930,37 @@ export const useAppShell = () => {
     lastInterstitialDismissedMsRef.current = now;
     writeLastInterstitialDismissedMs(now);
     interstitialArmedRef.current = false;
-    setShowFullScreenAd(false);
+    setGateAdPresentation(null);
     flushInterstitialDismissWaiter();
   }, [flushInterstitialDismissWaiter]);
 
+  useEffect(() => {
+    setInterstitialUiHandler(async (presentation) => {
+      if (streamModeRef.current) return;
+      if (shouldSuppressAdsForGate()) return;
+      await new Promise<void>((resolve) => {
+        interstitialDismissWaitersRef.current.push(resolve);
+        setGateAdPresentation(presentation);
+      });
+    });
+    return () => setInterstitialUiHandler(null);
+  }, []);
+
+  /** 全面広告は body 直下 z-[5000]。没入へ遷移したら取りこぼしでシェルだけ見えない事故を防ぐ */
+  useEffect(() => {
+    if (!suppressesQuietImmersiveGlobalChrome(screen)) return;
+    if (!gateAdPresentation) return;
+    handleDismissFullScreenAd();
+  }, [screen, gateAdPresentation, handleDismissFullScreenAd]);
+
   /**
-   * 「自然な区切り」で呼ぶ。2分アーム済みかつ直近60秒以内に出していなければ全面広告を出し、閉じるまで await。
+   * 「自然な区切り」で呼ぶ。2分アーム済みかつ最小間隔を満たせばリワード／全面フローへ入り、閉じるまで await。
    */
   const tryInterstitialAtNaturalBreak = useCallback(async () => {
     if (streamMode) return;
-    if (showFullScreenAd) return;
+    if (shouldSuppressAdsForGate()) return;
+    if (shouldDeferInterstitialDuringSocialPlay()) return;
+    if (gateAdPresentation) return;
     if (isGenerating) return;
     const narr = typeof narration === 'string' ? narration.trim() : '';
     if (narr.length > 0) return;
@@ -832,41 +971,204 @@ export const useAppShell = () => {
     if (!interstitialArmedRef.current && now - last < INTERSTITIAL_ARM_MS) return;
     if (!interstitialArmedRef.current) return;
 
-    interstitialArmedRef.current = false;
-    await adService.showInterstitial();
-    await new Promise<void>((resolve) => {
-      interstitialDismissWaitersRef.current.push(resolve);
-      setShowFullScreenAd(true);
-    });
-  }, [streamMode, showFullScreenAd, isGenerating, narration]);
+    const gate = rakudaGateRef.current ?? resolveActiveRakudaGate();
+    if (gateAdSequenceForGate(gate).length <= 0) return;
 
-  const onOpenHundredHub = useCallback(async () => {
+    interstitialArmedRef.current = false;
+    await adService.showInterstitialForGate(gate);
+  }, [streamMode, gateAdPresentation, isGenerating, narration]);
+
+  /** 対人セッション終了（席に戻る）— 2分アーム不要でゲート契約どおり清算 */
+  const tryInterstitialAtSocialSessionEnd = useCallback(async () => {
+    if (streamMode) {
+      settleSocialPlayAdSession();
+      return;
+    }
+    if (shouldSuppressAdsForGate()) {
+      cancelSocialPlayAdDeferral();
+      return;
+    }
+    if (gateAdPresentation) return;
+    if (isGenerating) return;
+    const narr = typeof narration === 'string' ? narration.trim() : '';
+    if (narr.length > 0) return;
+
+    if (!settleSocialPlayAdSession()) return;
+
+    const gate = rakudaGateRef.current ?? resolveActiveRakudaGate();
+    if (gateAdSequenceForGate(gate).length <= 0) return;
+
+    interstitialArmedRef.current = false;
+    await adService.showInterstitialForGate(gate);
+  }, [streamMode, gateAdPresentation, isGenerating, narration]);
+
+  const handleSelectGate = useCallback(
+    (gate: RakudaGateId) => {
+      if (gate === 'green') return;
+      writeRakudaGateChoice(gate);
+      const active = resolveActiveRakudaGate(undefined, serverGreenUntilMs);
+      setRakudaGate(active);
+      applyGateNicknameCssColor(active);
+      setShowGateSelection(false);
+      setScreen('seat-selection');
+    },
+    [setScreen, serverGreenUntilMs],
+  );
+
+  const handleGreenGateDevBypass = useCallback(() => {
+    activateGreenGateSubscription();
+    const active = resolveActiveRakudaGate(undefined, serverGreenUntilMs);
+    setRakudaGate(active);
+    applyGateNicknameCssColor(active);
+    setShowGateSelection(false);
+    setScreen('seat-selection');
+  }, [setScreen, serverGreenUntilMs]);
+
+  const handleGreenGateCheckout = useCallback(async () => {
+    if (!stripeGreenEnabled) return;
+    setGreenCheckoutBusy(true);
+    try {
+      let user = authUserForUi;
+      if (!user) {
+        await (handleGoogleLoginViaPopup?.() ?? handleGoogleLogin());
+        user = auth.currentUser;
+      }
+      if (!user) {
+        setNotification('Google ログインが必要です。');
+        return;
+      }
+      await waitForGoogleSessionRestore(2500);
+      const readyUser = auth.currentUser ?? user;
+      const token = await readyUser.getIdToken();
+      const result = await createGreenGateCheckoutSession(token);
+      if (!result.ok) {
+        setNotification('決済の準備中です。しばらくしてからお試しください。');
+        return;
+      }
+      window.location.href = result.url;
+    } finally {
+      setGreenCheckoutBusy(false);
+    }
+  }, [
+    stripeGreenEnabled,
+    authUserForUi,
+    handleGoogleLogin,
+    handleGoogleLoginViaPopup,
+    setNotification,
+  ]);
+
+  useEffect(() => {
+    if (!isAuthReady) return;
+    const params = new URLSearchParams(window.location.search);
+    const gateResult = params.get('green_gate');
+    if (!gateResult) return;
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete('green_gate');
+    url.searchParams.delete('session_id');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+
+    if (gateResult === 'cancel') return;
+
+    const sessionId = params.get('session_id');
+    if (gateResult !== 'success' || !sessionId) return;
+
+    void (async () => {
+      const user = authUserForUi ?? auth.currentUser;
+      if (!user) return;
+      const token = await user.getIdToken();
+      const synced = await syncGreenGateAfterCheckout(token, sessionId);
+      if (synced.ok && synced.greenUntilMs) {
+        syncLocalGreenGateFromServer(synced.greenUntilMs);
+      }
+      const active = resolveActiveRakudaGate(Date.now(), synced.greenUntilMs ?? serverGreenUntilMs);
+      setRakudaGate(active);
+      applyGateNicknameCssColor(active);
+      setShowGateSelection(false);
+      setScreen('seat-selection');
+      setNotification('緑のゲートが有効になりました。協力ありがとうございます。');
+    })();
+  }, [isAuthReady, authUserForUi, serverGreenUntilMs, setNotification, setScreen]);
+
+  useEffect(() => {
+    if (resolveDonationThanksOnLoad()) setShowDonationThanks(true);
+  }, []);
+
+  const handleRequestGateReselect = useCallback(() => {
+    clearRakudaGateChoice();
+    setRakudaGate(null);
+    applyGateNicknameCssColor(null);
+    setShowGateSelection(true);
+    setShowSettingsModal(false);
+  }, []);
+
+  const onOpenKeijiban = useCallback(async () => {
+    await waitForGoogleSessionRestore(2500);
+    if (authUserForUi && isRenrakuAdmin(authUserForUi)) {
+      await ensureRenrakuAdminFirestoreAuth(authUserForUi);
+    }
     setRenrakuchoInitialActiveTab('public');
     setRenrakuchoInitialPublicScreen('list');
-    setRenrakuchoMountKey((k) => k + 1);
-    window.history.pushState({ rk: 'hundred-hub' }, '', '/hundred');
+    setRenrakuchoInitialSelectedHundred(null);
+    window.history.pushState({ rk: 'keijiban' }, '', '/keijiban');
     setShowRenrakucho(true);
-    // Auth can be slow/unreliable on some iPad/Safari environments.
-    // Open the UI first so it doesn't look "broken", then ensure auth in background.
-    void ensureAuth().catch(() => {
-      /* keep flow */
-    });
-  }, [ensureAuth, setShowRenrakucho]);
+  }, [authUserForUi, setShowRenrakucho]);
+
+  const onOpenHundredHub = useCallback(
+    async (opts?: { focusCreateForm?: boolean }) => {
+      const focusCreate = opts?.focusCreateForm !== false;
+      setRenrakuchoInitialActiveTab('public');
+      if (focusCreate) {
+        clearHundredRestoreSession();
+        setRenrakuchoInitialPublicScreen('list');
+        setRenrakuchoInitialSelectedHundred(null);
+      } else {
+        const restored = loadHundredRestoreSession();
+        setRenrakuchoInitialPublicScreen(restored?.publicScreen ?? 'list');
+        setRenrakuchoInitialSelectedHundred(restored?.selectedHundred ?? null);
+      }
+      setRenrakuchoMountKey((k) => k + 1);
+      if (focusCreate) {
+        try {
+          window.localStorage.setItem('rk_stream_mode', '0');
+        } catch {
+          /* ignore */
+        }
+      }
+      const hash = focusCreate ? `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}` : '';
+      const query = focusCreate ? '?stream=0' : '';
+      window.history.pushState({ rk: 'hundred-hub' }, '', `/hundred${query}${hash}`);
+      setShowRenrakucho(true);
+      if (!focusCreate) {
+        markHundredRecruitSeenNow();
+      }
+      void ensureAuth().catch(() => {
+        /* keep flow */
+      });
+    },
+    [ensureAuth, setShowRenrakucho]
+  );
 
   const onOpenRenrakuchoAdmin = useCallback(async () => {
+    await waitForGoogleSessionRestore(2500);
+    const user = authUserForUi;
+    if (user && isRenrakuAdmin(user)) {
+      await ensureRenrakuAdminFirestoreAuth(user);
+    }
     setRenrakuchoInitialActiveTab('admin');
     setRenrakuchoInitialPublicScreen('list');
+    setRenrakuchoInitialSelectedHundred(null);
     setRenrakuchoMountKey((k) => k + 1);
     window.history.pushState({ rk: 'hundred-hub-admin' }, '', '/hundred');
     setShowRenrakucho(true);
-    // Admin tab still requires auth for actions, but opening the UI should be immediate.
     void ensureAuth().catch(() => {
       /* keep flow */
     });
-  }, [ensureAuth, setShowRenrakucho]);
+  }, [authUserForUi, ensureAuth, setShowRenrakucho]);
 
   useEffect(() => {
     if (!isEntered) return;
+    if (screen === 'game') return;
     const path = window.location.pathname;
     const pathNorm = path.replace(/\/+$/, '') || '/';
     const openRenrakuFromPath =
@@ -879,25 +1181,56 @@ export const useAppShell = () => {
 
     let canceled = false;
     void (async () => {
+      await waitForGoogleSessionRestore(2500);
       if (canceled) return;
       setRenrakuchoInitialActiveTab('public');
-      setRenrakuchoInitialPublicScreen('list');
+      try {
+        const h =
+          typeof window !== 'undefined' && typeof window.location?.hash === 'string' ? window.location.hash : '';
+        const wantsCreate =
+          h === `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}` || h.endsWith(`#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`);
+        if (wantsCreate) {
+          clearHundredRestoreSession();
+          setRenrakuchoInitialPublicScreen('list');
+          setRenrakuchoInitialSelectedHundred(null);
+        } else {
+          const restored = loadHundredRestoreSession();
+          setRenrakuchoInitialPublicScreen(restored?.publicScreen ?? 'list');
+          setRenrakuchoInitialSelectedHundred(restored?.selectedHundred ?? null);
+        }
+      } catch {
+        setRenrakuchoInitialPublicScreen('list');
+        setRenrakuchoInitialSelectedHundred(null);
+      }
       setRenrakuchoMountKey((k) => k + 1);
       setShowRenrakucho(true);
-      // Ensure auth in background; don't block showing the overlay.
-      void ensureAuth().catch(() => {
-        /* keep flow */
-      });
     })();
 
     return () => {
       canceled = true;
     };
-  }, [isEntered, screen, showRenrakucho, ensureAuth, setShowRenrakucho]);
+  }, [isEntered, screen, showRenrakucho, setShowRenrakucho]);
+
+  const hideBottomStatusBar = useMemo(() => {
+    if (
+      screen === 'quiet-room' ||
+      screen === 'slide-puzzle' ||
+      screen === 'othello' ||
+      screen === 'game' ||
+      screen === 'seat-selection' ||
+      screen === 'select'
+    ) {
+      return true;
+    }
+    if (!showRenrakucho || typeof window === 'undefined') return false;
+    const p = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+    return p === '/keijiban' || p.endsWith('/keijiban');
+  }, [screen, showRenrakucho]);
 
   const appLayoutProps: AppLayoutProps = {
-    // Ad banner is always present on normal screens; reserve space to avoid covering UI.
-    reserveBottomAdSpace: !streamMode && !(isMultiplay && screen === 'game') && screen !== 'seat-selection',
+    // 固定バナー広告は使わない（リワード相当の全面のみ `showFullScreenAd`）。
+    reserveBottomAdSpace: false,
+    reserveBottomStatusInset: !hideBottomStatusBar,
     language,
     isGenerating,
     isMultiplay,
@@ -905,7 +1238,8 @@ export const useAppShell = () => {
     syncCountdown,
     generatingTitle: syncFromHundredRooms && isGenerating ? 'ホストが問題を作成中です...' : undefined,
     generatingHint: syncFromHundredRooms && isGenerating ? 'しばらくお待ちください' : undefined,
-    showFullScreenAd,
+    suppressGameStatusOverlays: suppressesQuietImmersiveGlobalChrome(screen),
+    gateAdPresentation,
     onDismissFullScreenAd: handleDismissFullScreenAd,
     showSettingsModal,
     setShowSettingsModal,
@@ -921,6 +1255,7 @@ export const useAppShell = () => {
     setIsAdVisible,
     isBgmEnabled,
     onToggleBgm: () => {
+      audioService.noteUserGesture();
       const s = !isBgmEnabled;
       audioService.toggle(s);
       setIsBgmEnabled(s);
@@ -937,6 +1272,13 @@ export const useAppShell = () => {
     viewerCount,
     onJoinRoom: handleConfirmJoin,
     onStartHundred: (hundredRoomDocId: string) => {
+      const restored = loadHundredRestoreSession();
+      if (restored?.selectedHundred?.roomId === hundredRoomDocId) {
+        saveHundredRestoreSession({
+          publicScreen: 'hundred-board',
+          selectedHundred: restored.selectedHundred,
+        });
+      }
       setIsGenerating(true);
       setShowRenrakucho(false);
       // みんなであそぶは既存 GameScreen + hundred_rooms（grid/words/foundWords）購読
@@ -950,10 +1292,21 @@ export const useAppShell = () => {
       setScreen('game');
     },
     ensureAuth,
+    shellFirebaseUser: authUserForUi,
+    onRequestGoogleLogin: handleGoogleLogin,
+    onGoogleLogout: handleGoogleLogout,
+    settingsFirebaseUser: authUserForUi,
+    settingsIsAuthReady: isAuthReady,
     renrakuchoMountKey,
     renrakuchoInitialActiveTab,
     renrakuchoInitialPublicScreen,
+    renrakuchoInitialSelectedHundred,
     streamMode,
+    gateSuppressAds,
+    rakudaGate,
+    onRequestGateReselect: handleRequestGateReselect,
+    showDonationThanks,
+    setShowDonationThanks,
   };
 
   const appRouterProps: React.ComponentProps<typeof AppRouter> = {
@@ -966,7 +1319,9 @@ export const useAppShell = () => {
     handleStartGameWithSeed,
     handleConfirmJoin,
     handleGoogleLogin,
-    firebaseUser,
+    handleGoogleLoginViaPopup,
+    isAuthReady,
+    firebaseUser: authUserForUi,
     setIsStampCardOpen,
     setShowSettingsModal,
     setIsAdVisible,
@@ -1004,6 +1359,7 @@ export const useAppShell = () => {
     handleSaveHistory,
     isOnline,
     tryInterstitialAtNaturalBreak,
+    tryInterstitialAtSocialSessionEnd,
     handleClear,
     narration,
     difficulty,
@@ -1018,6 +1374,10 @@ export const useAppShell = () => {
     onHundredRoomFinished,
     ensureAuth,
     hasActiveRecruitments,
+    hundredRecruitHasNew,
+    markHundredRecruitSeen,
+    reversiRecruitHasOpen,
+    reversiRecruitHostWaiting,
     viewerCount,
     userEmoji,
     setUserEmoji,
@@ -1026,6 +1386,7 @@ export const useAppShell = () => {
     setRecruitMessageId,
     recruitedAt,
     setRecruitedAt,
+    onOpenKeijiban,
     onOpenHundredHub,
     renrakuchoHasUnread,
     accounts,
@@ -1034,6 +1395,9 @@ export const useAppShell = () => {
     createAccount,
     streamMode,
     showRenrakucho,
+    logs,
+    addLog,
+    recordShussekiGamePlay,
   };
 
   const statusProps = {
@@ -1042,7 +1406,7 @@ export const useAppShell = () => {
     isMultiplay,
     roomStatus,
     syncCountdown,
-    showFullScreenAd,
+    gateAdPresentation,
     onDismissFullScreenAd: handleDismissFullScreenAd,
   };
 
@@ -1050,6 +1414,11 @@ export const useAppShell = () => {
     userEmoji,
     nickname,
     isOnline,
+    firebaseUser: authUserForUi,
+    isAuthReady,
+    onGoogleLogin: handleGoogleLogin,
+    onGoogleLoginPopup: handleGoogleLoginViaPopup,
+    hidden: hideBottomStatusBar,
   };
 
   return {
@@ -1059,5 +1428,11 @@ export const useAppShell = () => {
     headerProps,
     isBanned,
     banUserName,
+    showGateSelection,
+    handleSelectGate,
+    stripeGreenEnabled,
+    handleGreenGateCheckout,
+    handleGreenGateDevBypass,
+    greenCheckoutBusy,
   };
 };

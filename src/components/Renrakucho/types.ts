@@ -1,10 +1,12 @@
-import type { FirestoreTimeInput } from '../../lib/firestoreTime';
+import type { FirestoreTimeInput } from '../../lib/rakudaHubShell';
 
 export interface ActiveUser {
   uid: string;
   name: string;
   emoji: string;
   lastActive: any;
+  /** らくだにいるが盤面・掲示板は見ていない（食事など） */
+  onBreak?: boolean;
 }
 
 export interface Message {
@@ -24,7 +26,9 @@ export interface Message {
   status?: string;
   deletedByAdmin?: boolean;
   blockedByAdmin?: boolean;
-  /** 管理者からの返信（renraku_private のみ） */
+  /** 管理者から返信済み（本文は private_reply サブコレクション） */
+  hasReply?: boolean;
+  /** @deprecated 旧データ互換。新規返信は private_reply のみに保存 */
   replyMessage?: string;
   /** @deprecated 旧: らくだからの贈り物（一文字絵文字）。互換のため残す */
   replyEmoji?: string;
@@ -47,9 +51,9 @@ export interface BlockedUser {
 export type BulkBlockAuthorPostsHandler = (authorUid: string, authorName?: string) => void | Promise<void>;
 
 /**
- * 募集の掲載時間（5・10・15 分＝300・600・900 秒）。`recruitDeadlineAt` のオフセットに使う。
+ * 募集の掲載時間（0・5・10・15 分）。0 は最短の募集枠用。`recruitDeadlineAt` のオフセットに使う。
  */
-export type HundredRecruitDurationSec = 300 | 600 | 900;
+export type HundredRecruitDurationSec = 0 | 300 | 600 | 900;
 
 /** @deprecated 意味は {@link HundredRecruitDurationSec}（募集時間） */
 export type HundredGameTimeLimitSec = HundredRecruitDurationSec;
@@ -57,7 +61,10 @@ export type HundredGameTimeLimitSec = HundredRecruitDurationSec;
 export interface HundredPublicRecruit {
   id: string;
   targetWord: string;
+  /** 列数（後方互換: 正方形のみのとき boardRows 省略可） */
   boardSize: number;
+  boardCols?: number;
+  boardRows?: number;
   createdAt: any;
   type: 'hundred';
   roomId?: string;
@@ -88,6 +95,9 @@ export type HundredRoomListMeta = {
   gameTimeLimitSec?: number;
   endReason?: string;
 };
+
+/** 管理者の伝言受信箱の読み込み状態 */
+export type AdminPrivateInboxLoadState = 'idle' | 'loading' | 'ok' | 'denied' | 'error';
 
 export enum OperationType {
   CREATE = 'create',
