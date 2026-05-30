@@ -61,6 +61,7 @@ import AdminScreen from './AdminScreen';
 import RenrakuchoLayout from './RenrakuchoLayout';
 import { RK_RENRAKU_LAST_SEEN_MS_KEY } from '../../hooks/useRenrakuchoUnreadBadge';
 import { useActiveUserPlayRecruitBadges } from '../../hooks/useActiveUserPlayRecruitBadges';
+import type { RenrakuReportRecord } from '../../lib/renrakuReport';
 import {
   readRenrakuOnBreakLocal,
   setRenrakuPresenceBreak,
@@ -387,6 +388,8 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   const canSendPrivateDenwa = useMemo(() => isGoogleSignedInUser(effectiveAuthUser), [effectiveAuthUser]);
   const [adminPrivateLoadState, setAdminPrivateLoadState] = useState<AdminPrivateInboxLoadState>('idle');
   const [adminPrivateReloadTick, setAdminPrivateReloadTick] = useState(0);
+  const [renrakuReports, setRenrakuReports] = useState<RenrakuReportRecord[]>([]);
+  const [adminReportsLoadState, setAdminReportsLoadState] = useState<AdminPrivateInboxLoadState>('idle');
 
   useEffect(() => {
     if (publicScreen !== 'hundred-wait' && publicScreen !== 'hundred-board') return;
@@ -964,6 +967,47 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       unsubscribe?.();
     };
   }, [isAdmin, effectiveAuthUser, adminPrivateReloadTick]);
+
+  // Firestore 購読（通報一覧: Admin only）
+  useEffect(() => {
+    if (!isAdmin || !effectiveAuthUser?.uid) {
+      setRenrakuReports([]);
+      setAdminReportsLoadState('idle');
+      return;
+    }
+
+    let cancelled = false;
+    setAdminReportsLoadState('loading');
+    void ensureRenrakuAdminFirestoreAuth(effectiveAuthUser);
+
+    const q = query(collection(db, 'renraku_reports'), orderBy('createdAt', 'desc'), limit(100));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (cancelled) return;
+        const rows = snapshot.docs.map(
+          (d) => ({ id: d.id, ...(d.data() as Omit<RenrakuReportRecord, 'id'>) }) as RenrakuReportRecord,
+        );
+        setRenrakuReports(rows);
+        setAdminReportsLoadState('ok');
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: string }).code)
+            : '';
+        console.error('[Renrakucho] renraku_reports onSnapshot FAILED', code, error);
+        setAdminReportsLoadState(code === 'permission-denied' ? 'denied' : 'error');
+        handleFirestoreError(error, OperationType.LIST, 'renraku_reports');
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [isAdmin, effectiveAuthUser?.uid]);
 
   // Firestore 購読（Fetch My Private Messages: 自分の uid）
   useEffect(() => {
@@ -1585,6 +1629,8 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
             handleBlock={handleBlock}
             handleBulkBlockAuthorPosts={handleBulkBlockAuthorPosts}
             handleUnblock={handleUnblock}
+            renrakuReports={renrakuReports}
+            adminReportsLoadState={adminReportsLoadState}
             privateReplyByMessageId={privateReplyByMessageId}
             onSendPrivateReply={(messageId, text) => void handleSendPrivateReply(messageId, text)}
           />
