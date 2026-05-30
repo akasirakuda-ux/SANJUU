@@ -10,6 +10,10 @@ import {
   type RenrakuPrivateReplyPayload,
 } from '../../lib/rakudaHubShell';
 import { saveHundredRestoreSession } from '../../lib/rakudaHundredRestore';
+import {
+  parseRenrakuBoardPostIdFromHash,
+  renrakuBoardPostElementId,
+} from '../../lib/renrakuReport';
 import type { HundredPublicRecruit, HundredRoomListMeta, Message } from './types';
 import RecruitMessage from './RecruitMessage';
 import HundredPublicListCard from './hundred/HundredPublicListCard';
@@ -192,6 +196,34 @@ const PublicScreen: React.FC<{
 
     return [...hundredTop, ...other, ...hundredBottom];
   }, [sortedHundredForList, publicMessages, hundredRoomMetaByRoomId, now]);
+
+  const scrollToBoardPostFromHash = useCallback(() => {
+    if (publicScreen !== 'list') return false;
+    const postId = parseRenrakuBoardPostIdFromHash();
+    if (!postId) return false;
+    const el = document.getElementById(renrakuBoardPostElementId(postId));
+    if (!el) return false;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return true;
+  }, [publicScreen]);
+
+  /** 通報確認など `#rk-board-post-{id}` 直リンクで該当投稿へスクロール */
+  useLayoutEffect(() => {
+    if (publicScreen !== 'list' || !publicTimelineHydrated) return;
+    if (!parseRenrakuBoardPostIdFromHash()) return;
+    const raf = window.requestAnimationFrame(() => {
+      scrollToBoardPostFromHash();
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [publicScreen, publicTimelineHydrated, sortedPublicItems.length, scrollToBoardPostFromHash]);
+
+  useEffect(() => {
+    const onHashChange = () => {
+      scrollToBoardPostFromHash();
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [scrollToBoardPostFromHash]);
 
   const myPrivateVisible = useMemo(() => {
     return [...myPrivateMessages].slice().sort((a: any, b: any) => createdAtMs(b) - createdAtMs(a));

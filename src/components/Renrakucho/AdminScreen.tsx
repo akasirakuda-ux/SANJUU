@@ -12,6 +12,7 @@ import {
   RENRAKU_REPORT_TARGET_LABELS,
   renrakuReportDeleteTarget,
   renrakuReportReasonLabelJa,
+  renrakuReportCanOpenOnBoard,
   resolveRenrakuReportTargetMessage,
   type RenrakuReportRecord,
 } from '../../lib/renrakuReport';
@@ -47,6 +48,7 @@ const AdminScreen: React.FC<{
   handleUnblock: (userId: string) => void | Promise<void>;
   renrakuReports?: RenrakuReportRecord[];
   adminReportsLoadState?: AdminPrivateInboxLoadState;
+  onViewReportedPost?: (report: RenrakuReportRecord) => void;
   privateReplyByMessageId: Record<string, RenrakuPrivateReplyPayload>;
   onSendPrivateReply: (messageId: string, text: string) => void | Promise<void>;
 }> = ({
@@ -64,6 +66,7 @@ const AdminScreen: React.FC<{
   handleUnblock,
   renrakuReports = [],
   adminReportsLoadState = 'idle',
+  onViewReportedPost,
   privateReplyByMessageId,
   onSendPrivateReply,
 }) => {
@@ -201,6 +204,16 @@ const AdminScreen: React.FC<{
                     {report.pagePath ? <span>ページ: {report.pagePath}</span> : null}
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    {renrakuReportCanOpenOnBoard(report.targetType) && onViewReportedPost ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onViewReportedPost(report)}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-sky-300 bg-rk-sky-50 text-rk-sky-900 hover:bg-rk-sky-100 disabled:opacity-40"
+                      >
+                        投稿を確認する
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={busy}

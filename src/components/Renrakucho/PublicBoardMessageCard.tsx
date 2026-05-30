@@ -2,9 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { Pin } from 'lucide-react';
 import { db } from '../../firebase';
-import { formatFirestoreTimeJa } from '../../lib/firestoreTime';
+import { formatFirestoreTimeJa } from '../../lib/rakudaHubShell';
 import type { Message } from './types';
-import MentionText from './MentionText';
+import RenrakuReportButton from './RenrakuReportButton';
+import RenrakuMessageBody from './RenrakuMessageBody';
+import RenrakuCopyTextButton from './RenrakuCopyTextButton';
+import { RK_GATE_NICK_DISPLAY_CLASS } from '../../lib/rakudaGate';
+import { renrakuBoardPostElementId } from '../../lib/renrakuReport';
 
 export type PublicBoardMessageCardProps = {
   msg: Message;
@@ -48,8 +52,9 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
 
   return (
     <div
-      className={`bg-white rounded-xl p-3 shadow-sm border relative group ${
-        msg.pinned ? 'border-amber-300 ring-1 ring-amber-100' : 'border-slate-200'
+      id={renrakuBoardPostElementId(msg.id)}
+      className={`scroll-mt-4 bg-rk-white rounded-xl p-3 shadow-sm border relative group ${
+        msg.pinned ? 'border-rk-amber-300 ring-1 ring-rk-amber-100' : 'border-rk-slate-200'
       }`}
     >
       <div className="flex gap-2 items-start mb-2">
@@ -59,32 +64,42 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
         <div className="min-w-0 flex-1">
           <div className="flex justify-between items-start gap-2 mb-1">
             <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-[min(100%,32ch)]">
-              <span className="text-xs font-medium text-slate-700 bg-amber-50 px-2 py-1 rounded-xl border border-amber-200 break-words whitespace-normal inline-flex items-center gap-1">
+              <span
+                className={`text-xs font-medium bg-rk-amber-50 px-2 py-1 rounded-xl border border-rk-amber-200 break-words whitespace-normal inline-flex items-center gap-1 ${
+                  isMine ? RK_GATE_NICK_DISPLAY_CLASS : 'text-rk-slate-700'
+                }`}
+              >
                 {msg.pinned ? (
-                  <Pin className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2.5} aria-hidden />
+                  <Pin className="w-3.5 h-3.5 text-rk-amber-700 shrink-0" strokeWidth={2.5} aria-hidden />
                 ) : null}
                 {msg.fromUser}
               </span>
             </div>
-            <span className="text-[10px] text-slate-400 shrink-0">{formatFirestoreTimeJa(msg.createdAt)}</span>
+            <span className="text-[10px] text-rk-slate-400 shrink-0">{formatFirestoreTimeJa(msg.createdAt)}</span>
           </div>
-          <p className="text-xs leading-relaxed whitespace-pre-wrap text-slate-700">
-            <MentionText text={String(msg.message ?? '')} />
-          </p>
+          <RenrakuMessageBody text={String(msg.message ?? '')} />
 
           <div className="mt-2 flex flex-wrap items-center gap-2">
+            <RenrakuCopyTextButton text={String(msg.message ?? '')} />
             <button
               type="button"
               onClick={onToggleReaction}
               disabled={isInteractionBlocked}
               className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition-colors ${
                 likedByMe
-                  ? 'border-sky-300 bg-sky-50 text-sky-800'
-                  : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  ? 'border-rk-sky-300 bg-rk-sky-50 text-rk-sky-800'
+                  : 'border-rk-slate-200 bg-rk-slate-50 text-rk-slate-600 hover:bg-rk-slate-100'
               } disabled:opacity-40 disabled:pointer-events-none`}
             >
               いいね
             </button>
+            <RenrakuReportButton
+              targetType="public_messages"
+              targetId={msg.id}
+              authorUid={msg.fromUserUid}
+              reporterUid={currentUid}
+              interactionBlocked={isInteractionBlocked}
+            />
             {reactions.length > 0 ? (
               <div className="flex flex-wrap gap-1 items-center" aria-label="いいねした人の絵文字">
                 {reactions.map((r) => (
@@ -106,7 +121,7 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
                 <button
                   type="button"
                   onClick={onTogglePin}
-                  className="px-2 py-1 rounded-lg border border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100"
+                  className="px-2 py-1 rounded-lg border border-rk-amber-300 text-rk-amber-900 bg-rk-amber-50 hover:bg-rk-amber-100"
                 >
                   {msg.pinned ? 'ピン留め解除' : 'ピン留め'}
                 </button>
@@ -115,7 +130,7 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
                 type="button"
                 onClick={onDelete}
                 disabled={isInteractionBlocked || (msg as any).pinned === true}
-                className="px-2 py-1 rounded-lg border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 disabled:opacity-40 disabled:pointer-events-none"
+                className="px-2 py-1 rounded-lg border border-rk-rose-200 text-rk-rose-700 bg-rk-rose-50 hover:bg-rk-rose-100 disabled:opacity-40 disabled:pointer-events-none"
               >
                 削除
               </button>

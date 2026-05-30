@@ -61,7 +61,11 @@ import AdminScreen from './AdminScreen';
 import RenrakuchoLayout from './RenrakuchoLayout';
 import { RK_RENRAKU_LAST_SEEN_MS_KEY } from '../../hooks/useRenrakuchoUnreadBadge';
 import { useActiveUserPlayRecruitBadges } from '../../hooks/useActiveUserPlayRecruitBadges';
-import type { RenrakuReportRecord } from '../../lib/renrakuReport';
+import {
+  renrakuBoardPostElementId,
+  renrakuReportCanOpenOnBoard,
+  type RenrakuReportRecord,
+} from '../../lib/renrakuReport';
 import {
   readRenrakuOnBreakLocal,
   setRenrakuPresenceBreak,
@@ -1308,6 +1312,46 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     }
   };
 
+  const handleViewReportedPost = useCallback((report: RenrakuReportRecord) => {
+    if (!renrakuReportCanOpenOnBoard(report.targetType)) return;
+
+    const postId = report.targetId;
+    const pathRaw = (report.pagePath || '/keijiban').split('#')[0].split('?')[0];
+    const path = pathRaw.startsWith('/') ? pathRaw : '/keijiban';
+    const hash = `#${renrakuBoardPostElementId(postId)}`;
+
+    clearHundredRestoreSession();
+    setSelectedHundred(null);
+    setPublicScreen('list');
+    setActiveTab('main');
+
+    try {
+      window.history.pushState({ rk: 'keijiban-post' }, '', `${path}${hash}`);
+    } catch {
+      /* ignore */
+    }
+
+    const scrollToPost = (): boolean => {
+      const el = document.getElementById(renrakuBoardPostElementId(postId));
+      if (!el) return false;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return true;
+    };
+
+    window.requestAnimationFrame(() => {
+      if (scrollToPost()) return;
+      window.setTimeout(() => {
+        if (scrollToPost()) return;
+        window.dispatchEvent(
+          new CustomEvent('SHOW_TOAST', {
+            detail:
+              '投稿が見つかりません（非表示・削除済み、またはタイムラインの読み込み範囲外の可能性があります）',
+          }),
+        );
+      }, 700);
+    });
+  }, []);
+
   /** 通報対応: 同一投稿者 uid の投稿を3コレクションで一括で status: blocked にする */
   const handleBulkBlockAuthorPosts = useCallback(
     async (authorUid: string, authorName?: string) => {
@@ -1631,6 +1675,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
             handleUnblock={handleUnblock}
             renrakuReports={renrakuReports}
             adminReportsLoadState={adminReportsLoadState}
+            onViewReportedPost={handleViewReportedPost}
             privateReplyByMessageId={privateReplyByMessageId}
             onSendPrivateReply={(messageId, text) => void handleSendPrivateReply(messageId, text)}
           />

@@ -21,6 +21,25 @@ export const RENRAKU_REPORT_TARGET_LABELS: Record<RenrakuReportTargetType, strin
   renraku_private: 'らくだへの伝言',
 };
 
+/** 掲示板タイムライン上の投稿 DOM id / URL ハッシュ用 */
+export const RENRAKU_BOARD_POST_FRAGMENT_PREFIX = 'rk-board-post-';
+
+export function renrakuBoardPostElementId(postId: string): string {
+  return `${RENRAKU_BOARD_POST_FRAGMENT_PREFIX}${String(postId ?? '').trim()}`;
+}
+
+export function parseRenrakuBoardPostIdFromHash(hash?: string): string | null {
+  const raw = (hash ?? (typeof window !== 'undefined' ? window.location.hash : '')).replace(/^#/, '');
+  if (!raw.startsWith(RENRAKU_BOARD_POST_FRAGMENT_PREFIX)) return null;
+  const id = raw.slice(RENRAKU_BOARD_POST_FRAGMENT_PREFIX.length).trim();
+  return id || null;
+}
+
+/** 通報対象が掲示板タイムライン上で開ける種類か */
+export function renrakuReportCanOpenOnBoard(targetType: RenrakuReportTargetType): boolean {
+  return targetType === 'public_messages' || targetType === 'renraku_public';
+}
+
 export function renrakuReportReasonLabelJa(reason: string): string {
   return RENRAKU_REPORT_REASONS.find((r) => r.id === reason)?.label ?? reason;
 }
