@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Kiwi+Maru:wght@300;400;500&family=M+PLUS+Rounded+1c:wght@300;400;500;700;800;900&family=Noto+Sans+JP:wght@400;700;900&display=swap');
+@import "./rk-palettes.css";
 @import "tailwindcss";
 
 :root {
@@ -6,21 +7,182 @@
   --padding-s: 0.5rem; /* p-2 */
   --padding-m: 0.75rem; /* p-3 */
   --padding-l: 1rem; /* p-4 */
+
+  /*
+   * RK semantic palette（三十 .sj-rk-theme と同じ意味・値）
+   * SANJUU/web/docs/rakuda-ui-spine.md 参照
+   */
+  --rk-bg-page: var(--rk-slate-50);
+  --rk-bg-shell: rgb(254 243 199 / 0.9);
+  --rk-fg-default: var(--rk-slate-800);
+  --rk-fg-muted: var(--rk-slate-600);
+  --rk-fg-subtle: var(--rk-slate-500);
+  --rk-surface-card: #fffbeb;
+  --rk-surface-input: var(--rk-slate-50);
+  --rk-border-default: rgb(252 211 77 / 0.8);
+  --rk-border-muted: var(--rk-slate-200);
+  --rk-accent-warm: #b45309;
+  --rk-link: #92400e;
+  --rk-accent-primary: #00c874;
+  --rk-accent-primary-shadow: rgb(0 160 90);
+  /** ゲート選択に応じた利用者名の色（`rakudaGate.ts` が設定） */
+  --rk-gate-nick-color: inherit;
+  /* 成功・緑系（旧 Tailwind emerald と同階調。変更はここだけで反映） */
+  --rk-success-50: #ecfdf5;
+  --rk-success-100: #d1fae5;
+  --rk-success-200: #a7f3d0;
+  --rk-success-300: #6ee7b7;
+  --rk-success-400: #34d399;
+  --rk-success-500: #10b981;
+  --rk-success-600: #059669;
+  --rk-success-700: #047857;
+  --rk-success-800: #065f46;
+  --rk-success-900: #064e3b;
+  --rk-success-950: #022c22;
+  --rk-semantic-success-bg: var(--rk-success-50);
+  --rk-semantic-success-border: var(--rk-success-300);
+  --rk-semantic-success-fg: var(--rk-success-950);
+  --rk-semantic-danger: var(--rk-red-600);
+  --rk-semantic-danger-bg: var(--rk-red-50);
+  --rk-semantic-warning-fg: #b45309;
+  --rk-disabled-bg: var(--rk-slate-100);
+  --rk-disabled-fg: var(--rk-slate-500);
+  /** みんなであそぶ・募集リストの「募集中」バッジ（従来 #FF0000） */
+  --rk-hundred-recruit-badge: #ff0000;
+  /** AppHeader 下部ステータス帯（ログイン2行・ポップアップ行あり）を含む本文側確保 */
+  --rk-app-status-footer-reserve: 4.25rem;
+
+  /** 下部固定バナー廃止後も変数は残す（常に 0 扱いでレイアウト互換） */
+  --rk-ad-banner-bg: #1a1a1a;
+  --rk-ad-banner-badge-bg: #333333;
+  /*
+   * ハブ・連絡帳の木／羊皮トーン（SeatSelection・SelectScreen・Renrakucho 共通）
+   */
+  --rk-hub-rose-panel: #f6c7c7;
+  --rk-hub-bark: #5a3d28;
+  --rk-hub-bark-deep: #3b2a18;
+  --rk-hub-bark-border-soft: rgb(90 61 40 / 0.5);
+  --rk-hub-parchment: #e3d5bc;
+  --rk-hub-parchment-hover: #d9c9ae;
+  --rk-hub-parchment-screen: #faf6f0;
+  --rk-hub-shell-mid: #ebe4d6;
+  --rk-hub-cocoa: #8b572a;
+  --rk-hub-cocoa-shadow: rgb(101, 67, 33);
+  /** らくだホーム（三十へ戻る）スキュアの淡い水色 */
+  --rk-hub-squircle: #eef5fb;
+  /** Select の PRO アンロック裏スクリム */
+  --rk-unlock-scrim: #e0f7f7;
+  /** ゲ本番・協力モード周りの羊皮グラデ */
+  --rk-game-parchment-from: #efe2d1;
+  --rk-game-parchment-via: #f6ede2;
+  --rk-game-parchment-to: #e7d8c4;
+  /**
+   * ことばモード単独プレイのシェル縦グラデ
+   * （旧 `from-rk-amber-200/95 via-rk-orange-100 to-rk-amber-300/88` を1ヶ所に集約）
+   */
+  --rk-game-solo-shell-gradient: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--rk-amber-200) 95%, transparent),
+    var(--rk-orange-100),
+    color-mix(in srgb, var(--rk-amber-300) 88%, transparent)
+  );
+  /** ハブ QR の modules（小豆色。従来 #96514D） */
+  --rk-hub-qr-azuki: #96514d;
+  /** 盤面・ロゴ下地・QR light・html2canvas 等の白 */
+  --rk-white: #ffffff;
+  /** ピュア黒（全面スクリム・真黒に近い強調テキスト。従来 Tailwind `black`） */
+  --rk-black: #000000;
+  /** Kotoba ロゴ SVG の帯（アプリアイコンと同型） */
+  --rk-logo-band-coral: #ff6b6b;
+  --rk-logo-band-mint: #4ecdc4;
+  /** しゅっせき簿・累計ステップの中間グリーン（従来 Tailwind green-500） */
+  --rk-stamp-tier-green: #22c55e;
+  /** 盤面：確定／答え表示セルの文字縁取り */
+  --rk-board-glyph-stroke-on-found: rgb(15 23 42 / 0.32);
+  --rk-board-glyph-stroke-on-reveal: rgb(255 255 255 / 0.92);
+  /** マルチ「帯」色（席の見分け。旧 BAND_COLORS と同値） */
+  --rk-band-0: #ff6b6b;
+  --rk-band-1: #4ecdc4;
+  --rk-band-2: #45b7d1;
+  --rk-band-3: #ffa502;
+  --rk-band-4: #7bed9f;
+  --rk-band-5: #70a1ff;
+  --rk-band-6: #ff7f50;
+  --rk-band-7: #a29bfe;
+  --rk-band-8: #e84393;
+  --rk-band-9: #2ed573;
+  --rk-band-fallback: var(--rk-slate-950);
+  /** 立体ボタン影（PRO 購入・部品） */
+  --rk-shadow-unlock-buy: rgb(180 110 0);
+  --rk-shadow-soft-plate: var(--rk-slate-200);
+  --rk-shadow-elev-hub: 0 10px 30px rgb(120 53 15 / 0.08);
+  --rk-shadow-elev-hub-focus: 0 12px 36px rgb(217 119 6 / 0.16);
+  --rk-shadow-footer-hub: 0 -6px 24px rgb(120 53 15 / 0.08);
+  --rk-shadow-footer-danger: 0 -6px 24px rgb(127 29 29 / 0.08);
+  /** ラストワン／CLEAR 飛び出しタイトル（`GameScreen` 測定・表示で共通） */
+  --rk-fly-title-stroke: rgb(255 255 255 / 0.95);
+  --rk-fly-title-text-shadow: 0 10px 0 rgb(255 255 255 / 0.85);
+  /** モード入口の大見出し drop-shadow（`ModeEntryLayout`） */
+  --rk-title-drop-shadow: 0 8px 12px rgb(0 0 0 / 0.18);
+  /** 起動失敗オーバーレイ（`main.tsx`。`index.css` 読込後に出るので var 可） */
+  --rk-boot-overlay-bg: rgb(0 0 0 / 0.9);
+  --rk-boot-fatal-accent: var(--rk-red-500);
+  --rk-boot-fatal-stack-bg: #222222;
+  --rk-boot-loading-fg: var(--rk-fg-muted);
+  /** ひらめきルーム（メイン RK 外の例外トーン。`@theme` の `--color-rest-*` の源） */
+  --rk-rest-bg: #a2c2c2;
+  --rk-rest-accent: var(--rk-teal-400);
 }
 
 @theme {
   --font-rounded: "M PLUS Rounded 1c", Meiryo, sans-serif;
   --font-kiwi: "Kiwi Maru", serif;
 
-  /* Rest Room Colors */
-  --color-rest-bg: #a2c2c2;
-  --color-rest-accent: #2dd4bf;
+  /* Rest Room Colors（Tailwind: bg-rest-bg / text-rest-accent など） */
+  --color-rest-bg: var(--rk-rest-bg);
+  --color-rest-accent: var(--rk-rest-accent);
 
   /* UI Policy Variables (ラクダ喫茶 UI) */
   --radius-standard: var(--radius-standard);
   --padding-s: var(--padding-s);
   --padding-m: var(--padding-m);
   --padding-l: var(--padding-l);
+
+  /* Tailwind: bg-rk-shell / text-rk-fg など */
+  --color-rk-bg-page: var(--rk-bg-page);
+  --color-rk-shell: var(--rk-bg-shell);
+  --color-rk-fg: var(--rk-fg-default);
+  --color-rk-fg-muted: var(--rk-fg-muted);
+  --color-rk-fg-subtle: var(--rk-fg-subtle);
+  --color-rk-surface-card: var(--rk-surface-card);
+  --color-rk-surface-input: var(--rk-surface-input);
+  --color-rk-border: var(--rk-border-default);
+  --color-rk-border-muted: var(--rk-border-muted);
+  --color-rk-accent-warm: var(--rk-accent-warm);
+  --color-rk-link: var(--rk-link);
+  --color-rk-primary: var(--rk-accent-primary);
+  --color-rk-success-bg: var(--rk-semantic-success-bg);
+  --color-rk-success-border: var(--rk-semantic-success-border);
+  --color-rk-success-fg: var(--rk-semantic-success-fg);
+  --color-rk-success-50: var(--rk-success-50);
+  --color-rk-success-100: var(--rk-success-100);
+  --color-rk-success-200: var(--rk-success-200);
+  --color-rk-success-300: var(--rk-success-300);
+  --color-rk-success-400: var(--rk-success-400);
+  --color-rk-success-500: var(--rk-success-500);
+  --color-rk-success-600: var(--rk-success-600);
+  --color-rk-success-700: var(--rk-success-700);
+  --color-rk-success-800: var(--rk-success-800);
+  --color-rk-success-900: var(--rk-success-900);
+  --color-rk-success-950: var(--rk-success-950);
+  --color-rk-danger: var(--rk-semantic-danger);
+  --color-rk-danger-bg: var(--rk-semantic-danger-bg);
+  --color-rk-warning-fg: var(--rk-semantic-warning-fg);
+  --color-rk-disabled-bg: var(--rk-disabled-bg);
+  --color-rk-disabled-fg: var(--rk-disabled-fg);
+  --color-rk-hundred-recruit: var(--rk-hundred-recruit-badge);
+  --color-rk-white: var(--rk-white);
+  --color-rk-black: var(--rk-black);
 }
 
 @layer base {
@@ -48,7 +210,15 @@ body {
   -webkit-touch-callout: none;
   user-select: none;
   -webkit-user-select: none;
-  background-color: #f8fafc; /* slate-50 */
+  background-color: var(--rk-bg-page);
+}
+
+/** 掲示板メッセージ — body / AppLayout の select-none を上書き */
+.rk-board-message-text {
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: auto;
+  -webkit-touch-callout: default;
 }
 
 #root {
@@ -66,10 +236,24 @@ body {
   animation: scale-in 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
+/** 単独プレイ・ゲームシェル背景（`GameScreen` loading / メインラッパ） */
+.rk-bg-game-solo-shell {
+  background-image: var(--rk-game-solo-shell-gradient);
+}
+
 @keyframes aura-gold {
-  0% { color: #f59e0b; filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.8)); }
-  50% { color: #fef3c7; filter: drop-shadow(0 0 20px rgba(251, 191, 36, 1)); }
-  100% { color: #f59e0b; filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.8)); }
+  0% {
+    color: var(--rk-amber-500);
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--rk-white) 80%, transparent));
+  }
+  50% {
+    color: var(--rk-amber-100);
+    filter: drop-shadow(0 0 20px var(--rk-amber-400));
+  }
+  100% {
+    color: var(--rk-amber-500);
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--rk-white) 80%, transparent));
+  }
 }
 .animate-aura-gold {
   animation: aura-gold 2s ease-in-out infinite;
@@ -112,7 +296,7 @@ body {
 
 @keyframes soft-success-flash {
   0% { background-color: transparent; }
-  20% { background-color: rgba(52, 211, 153, 0.15); }
+  20% { background-color: color-mix(in srgb, var(--rk-success-400) 15%, transparent); }
   100% { background-color: transparent; }
 }
 .animate-soft-flash {
@@ -187,13 +371,17 @@ body {
 .bubble {
   position: absolute;
   bottom: -20px;
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--rk-white) 20%, transparent);
   border-radius: 50%;
   pointer-events: none;
   animation: float linear infinite;
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar（Firefox は `scrollbar-*`、WebKit は `::-webkit-scrollbar-*`） */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--rk-accent-primary) 20%, transparent) transparent;
+}
 .custom-scrollbar::-webkit-scrollbar {
   width: 4px;
 }
@@ -201,6 +389,174 @@ body {
   background: transparent;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 200, 116, 0.2);
+  background: color-mix(in srgb, var(--rk-accent-primary) 20%, transparent);
   border-radius: 10px;
+}
+
+/** 明るいパネル上のスクロールバー（`GameScreen` ワードリスト等。従来クラス名のみで定義なしだった） */
+.custom-scrollbar-white {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--rk-slate-400) 40%, transparent) transparent;
+}
+.custom-scrollbar-white::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar-white::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar-white::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--rk-slate-400) 40%, transparent);
+  border-radius: 10px;
+}
+
+.rk-gate-nick {
+  color: var(--rk-gate-nick-color);
+}
+
+/** 緑ゲート — 絵文字の周りに緑枠（名前色より見分けやすい・黄琥珀と混同しない色） */
+.rk-green-gate-emoji-frame,
+.rk-green-gate-avatar-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 3px solid #059669;
+  border-radius: 0.75rem;
+  background: #ecfdf5;
+  box-shadow:
+    0 0 0 2px #6ee7b7,
+    0 1px 4px rgb(5 150 105 / 0.35);
+  line-height: 1;
+}
+.rk-green-gate-emoji--inline {
+  padding: 0.1rem 0.2rem;
+  border-radius: 0.5rem;
+  border-width: 2px;
+}
+.rk-green-gate-emoji--md {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0.15rem;
+}
+.rk-green-gate-emoji--lg {
+  min-width: 3rem;
+  min-height: 3rem;
+  padding: 0.2rem;
+  border-radius: 0.875rem;
+}
+
+/** 常連さん（しゅっせき100日）— 茶枠（有料緑とは別軸） */
+.rk-shusseki-regular-emoji-frame,
+.rk-shusseki-regular-avatar-shell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 3px solid #92400e;
+  border-radius: 0.75rem;
+  background: #fffbeb;
+  box-shadow:
+    0 0 0 2px #fcd34d,
+    0 1px 4px rgb(146 64 14 / 0.28);
+  line-height: 1;
+}
+.rk-shusseki-regular-emoji--inline {
+  padding: 0.1rem 0.2rem;
+  border-radius: 0.5rem;
+  border-width: 2px;
+}
+.rk-shusseki-regular-emoji--md {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0.15rem;
+}
+.rk-shusseki-regular-emoji--lg {
+  min-width: 3rem;
+  min-height: 3rem;
+  padding: 0.2rem;
+}
+.rk-emoji-frame-regular-and-green-outer {
+  padding: 1px;
+}
+.rk-emoji-frame-regular-and-green-outer .rk-shusseki-regular-emoji--inner {
+  border-width: 2px;
+  box-shadow: none;
+  min-width: 0;
+  min-height: 0;
+}
+.rk-presence-avatar-regular-and-green {
+  border: 2px solid #92400e;
+  background: #fffbeb;
+  box-shadow:
+    0 0 0 2px #059669,
+    0 0 0 4px #6ee7b7,
+    0 1px 4px rgb(5 150 105 / 0.28);
+}
+
+/** iPad 等: スマホ canvas 拡大時の余白（letterbox） */
+html[data-rakuda-phone-canvas='1'] body {
+  background: var(--rk-bg-shell);
+}
+
+/** ことば探し（実幅）: 遷移直後の白画面を防ぐ */
+html:not([data-rakuda-phone-canvas='1']) body,
+html:not([data-rakuda-phone-canvas='1']) #root {
+  min-height: 100%;
+  height: 100%;
+}
+
+/** iPad トップハブ: 縦スクロール領域を確保（下部メニューまで届く） */
+html[data-rakuda-phone-canvas='1'] .rk-seat-selection-outer {
+  padding: 0.25rem;
+}
+
+html[data-rakuda-phone-canvas='1'] .rk-hub-scroll-shell {
+  height: 100%;
+  max-height: 100%;
+}
+
+html[data-rakuda-phone-canvas='1'] .rk-hub-scroll-pane {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+html[data-rakuda-phone-canvas='1'] .rk-hub-scroll-pane > div {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 5rem);
+}
+
+html[data-rakuda-phone-canvas='1'] .rk-hub-toolbar {
+  --rk-hub-toolbar-h: 3.5rem;
+}
+
+html[data-rakuda-phone-canvas='1'] .fixed.inset-0.max-w-screen-xl {
+  touch-action: manipulation;
+}
+
+/** ペア探し: iPad 実寸（phone canvas 解除中も全画面） */
+html[data-rk-tile-match-full='1'] {
+  height: 100%;
+}
+
+html[data-rk-tile-match-full='1'] body,
+html[data-rk-tile-match-full='1'] #root {
+  height: 100%;
+  min-height: 100%;
+}
+
+.rk-tile-match-play,
+.rk-tile-match-pick {
+  touch-action: manipulation;
+  -webkit-overflow-scrolling: touch;
+  color: rgb(30 41 59);
+  background-color: rgb(255 251 235);
+}
+
+/** ペア探しプレイ中: 卓まわりを明るく（iPad 向け） */
+.rk-tile-match-play .rk-tile-match-mountain {
+  filter: drop-shadow(0 2px 8px rgb(251 191 36 / 0.15));
+}
+
+.rk-tile-match-mountain {
+  will-change: transform;
 }

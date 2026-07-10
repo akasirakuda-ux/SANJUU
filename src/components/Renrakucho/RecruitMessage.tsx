@@ -3,12 +3,57 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { btnAccent } from '../../ui/policy';
 import { firestoreLikeToMillis, formatFirestoreTimeJa, RENRAKU_RECRUIT_TTL_MS } from '../../lib/rakudaHubShell';
+import {
+  boardGameRecruitRoomCollection,
+  parseBoardGameRecruitFromUrl,
+  type BoardGameRecruitKind,
+} from '../../lib/boardGameRenrakuRecruit';
 import type { Message } from './types';
 import RenrakuReportButton from './RenrakuReportButton';
 import RenrakuMessageBody from './RenrakuMessageBody';
 import RenrakuCopyTextButton from './RenrakuCopyTextButton';
 import { RK_GATE_NICK_DISPLAY_CLASS } from '../../lib/rakudaGate';
 import { renrakuBoardPostElementId } from '../../lib/renrakuReport';
+
+type RecruitRoomRef =
+  | { kind: 'kotoba'; collection: 'rooms'; roomId: string }
+  | { kind: BoardGameRecruitKind; collection: string; roomCode: string };
+
+function resolveRecruitRoomRef(msg: Message): RecruitRoomRef | null {
+  const roomInfo = msg.roomInfo;
+  if (roomInfo?.game === 'reversi' || roomInfo?.game === 'gomoku') {
+    const roomCode = (roomInfo.roomCode || '').trim().toUpperCase();
+    if (!roomCode) return null;
+    return {
+      kind: roomInfo.game,
+      collection: boardGameRecruitRoomCollection(roomInfo.game),
+      roomCode,
+    };
+  }
+
+  const url = roomInfo?.url;
+  if (!url) return null;
+
+  const boardGame = parseBoardGameRecruitFromUrl(url);
+  if (boardGame) {
+    return {
+      kind: boardGame.kind,
+      collection: boardGameRecruitRoomCollection(boardGame.kind),
+      roomCode: boardGame.roomCode,
+    };
+  }
+
+  try {
+    const urlObj = new URL(url);
+    const roomId = urlObj.searchParams.get('room');
+    if (!roomId) return null;
+    return { kind: 'kotoba', collection: 'rooms', roomId };
+  } catch {
+    return null;
+  }
+}
+
+const KOTOBA_JOINABLE_STATUSES = new Set(['waiting', 'start', 'playing']);
 
 const RecruitMessage: React.FC<{
   msg: Message;
@@ -17,13 +62,17 @@ const RecruitMessage: React.FC<{
   isInteractionBlocked?: boolean;
   onDelete: () => void;
   onJoinRoom?: (rid: string) => void;
-}> = ({ msg, isAdmin, currentUid, isInteractionBlocked, onDelete, onJoinRoom }) => {
+  onJoinBoardGameRecruit?: (kind: BoardGameRecruitKind, roomCode: string) => void;
+}> = ({ msg, isAdmin, currentUid, isInteractionBlocked, onDelete, onJoinRoom, onJoinBoardGameRecruit }) => {
   const [isExpired, setIsExpired] = useState(false);
   const [roomStatus, setRoomStatus] = useState<string | null>(null);
   const roomUnsubRef = useRef<(() => void) | null>(null);
-  const roomIdRef = useRef<string | null>(null);
+  const roomRefKey = useRef<string | null>(null);
+  const recruitRoomRef = resolveRecruitRoomRef(msg);
+  const isKotobaRecruit = recruitRoomRef?.kind === 'kotoba';
 
   useEffect(() => {
+    if (isKotobaRecruit) return;
     const createdMs = firestoreLikeToMillis(msg.createdAt);
     if (createdMs == null) return;
     const expiryTime = createdMs + RENRAKU_RECRUIT_TTL_MS;
@@ -35,47 +84,85 @@ const RecruitMessage: React.FC<{
     checkExpiry();
     const interval = setInterval(checkExpiry, 10000);
     return () => clearInterval(interval);
-  }, [msg.createdAt]);
+  }, [msg.createdAt, isKotobaRecruit]);
 
   useEffect(() => {
-    const url = msg.roomInfo?.url;
-    if (!url) return;
-    try {
-      const urlObj = new URL(url);
-      const roomId = urlObj.searchParams.get('room');
-      if (!roomId) return;
+    if (!recruitRoomRef) return;
 
+    const docId =
+      recruitRoomRef.kind === 'kotoba' ? recruitRoomRef.roomId : recruitRoomRef.roomCode;
+    const refKey = `${recruitRoomRef.collection}/${docId}`;
+    if (roomRefKey.current === refKey) return;
+
+    if (roomUnsubRef.current) {
+      roomUnsubRef.current();
+      roomUnsubRef.current = null;
+    }
+    roomRefKey.current = refKey;
+
+    const roomDocRef = doc(db, recruitRoomRef.collection, docId);
+    const unsubscribe = onSnapshot(roomDocRef, (snap) => {
+      if (!snap.exists()) {
+        setRoomStatus('deleted');
+        return;
+      }
+      const data = snap.data() as { status?: string; guest?: { uid?: string } };
+      if (recruitRoomRef.kind === 'kotoba') {
+        setRoomStatus(data.status || 'waiting');
+        return;
+      }
+      if (data.status === 'waiting' && !data.guest?.uid) {
+        setRoomStatus('waiting');
+      } else {
+        setRoomStatus('full');
+      }
+    });
+    roomUnsubRef.current = unsubscribe;
+
+    return () => {
       if (roomUnsubRef.current) {
         roomUnsubRef.current();
         roomUnsubRef.current = null;
       }
-      if (roomIdRef.current === roomId) return;
-      roomIdRef.current = roomId;
+      roomRefKey.current = null;
+    };
+  }, [recruitRoomRef]);
 
-      const roomRef = doc(db, 'rooms', roomId);
-      const unsubscribe = onSnapshot(roomRef, (snap) => {
-        const data = snap.data();
-        if (data) {
-          setRoomStatus(data.status || 'waiting');
-        } else {
-          setRoomStatus('deleted');
-        }
-      });
-      roomUnsubRef.current = unsubscribe;
-      return () => {
-        if (roomUnsubRef.current) {
-          roomUnsubRef.current();
-          roomUnsubRef.current = null;
-        }
-        roomIdRef.current = null;
-      };
-    } catch (e) {
-      console.error('Error parsing room URL in recruitment:', e);
-    }
-  }, [msg.roomInfo?.url]);
+  const roomLoaded = !recruitRoomRef || roomStatus !== null;
+  const isEnded = isKotobaRecruit
+    ? roomStatus === 'deleted' ||
+      roomStatus === 'finished' ||
+      (roomLoaded && recruitRoomRef != null && roomStatus != null && !KOTOBA_JOINABLE_STATUSES.has(roomStatus))
+    : isExpired ||
+      roomStatus === 'full' ||
+      roomStatus === 'deleted' ||
+      (roomLoaded && recruitRoomRef != null && roomStatus !== 'waiting');
 
-  const canJoin = !isExpired && roomStatus === 'waiting';
+  const canJoin = isKotobaRecruit
+    ? !isEnded && roomStatus != null && KOTOBA_JOINABLE_STATUSES.has(roomStatus)
+    : !isEnded && roomStatus === 'waiting';
   const isMine = !!currentUid && currentUid === (msg as { fromUserUid?: string }).fromUserUid;
+
+  if (isEnded) return null;
+
+  const handleJoin = () => {
+    if (!recruitRoomRef) return;
+    if (recruitRoomRef.kind === 'kotoba') {
+      if (onJoinRoom) {
+        onJoinRoom(recruitRoomRef.roomId);
+        return;
+      }
+      window.history.pushState({}, '', `?room=${recruitRoomRef.roomId}`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      return;
+    }
+    if (onJoinBoardGameRecruit) {
+      onJoinBoardGameRecruit(recruitRoomRef.kind, recruitRoomRef.roomCode);
+      return;
+    }
+    const url = msg.roomInfo?.url;
+    if (url) window.location.href = url;
+  };
 
   return (
     <div
@@ -86,35 +173,19 @@ const RecruitMessage: React.FC<{
         <div className="flex flex-wrap items-center gap-2 min-w-0">
           <span
             className={`text-xs font-medium px-2 py-1 rounded-xl border border-rk-slate-200 ${
-              !canJoin
-                ? 'bg-rk-slate-50 text-rk-slate-600'
-                : isMine
-                  ? `bg-rk-success-50 border-rk-success-200 ${RK_GATE_NICK_DISPLAY_CLASS}`
-                  : 'bg-rk-success-50 text-rk-slate-700 border-rk-success-200'
+              isMine
+                ? `bg-rk-success-50 border-rk-success-200 ${RK_GATE_NICK_DISPLAY_CLASS}`
+                : 'bg-rk-success-50 text-rk-slate-700 border-rk-success-200'
             }`}
           >
-            {!canJoin ? '募集終了' : msg.fromUser}
+            {msg.fromUser}
           </span>
         </div>
         <span className="text-[10px] text-rk-slate-400 shrink-0">{formatFirestoreTimeJa(msg.createdAt)}</span>
       </div>
       <RenrakuMessageBody text={msg.message} className="text-xs text-rk-slate-700 leading-relaxed whitespace-pre-wrap mb-3" />
-      {canJoin && msg.roomInfo?.url && (
-        <button
-          onClick={() => {
-            const url = new URL(msg.roomInfo!.url);
-            const roomId = url.searchParams.get('room');
-            if (roomId && onJoinRoom) {
-              onJoinRoom(roomId);
-            } else if (roomId) {
-              window.history.pushState({}, '', `?room=${roomId}`);
-              window.dispatchEvent(new PopStateEvent('popstate'));
-            } else {
-              window.location.href = msg.roomInfo!.url;
-            }
-          }}
-          className={`${btnAccent} inline-flex items-center gap-2`}
-        >
+      {canJoin && recruitRoomRef && (
+        <button onClick={handleJoin} className={`${btnAccent} inline-flex items-center gap-2`}>
           参加する！
         </button>
       )}
@@ -125,6 +196,7 @@ const RecruitMessage: React.FC<{
           targetType="renraku_public"
           targetId={msg.id}
           authorUid={msg.fromUserUid}
+          authorName={msg.fromUser}
           reporterUid={currentUid}
           interactionBlocked={!!isInteractionBlocked}
         />

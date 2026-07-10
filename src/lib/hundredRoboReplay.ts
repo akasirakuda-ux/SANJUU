@@ -1,29 +1,31 @@
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { PROHIBITED_WORDS } from '../constants';
+import { deleteField, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
-import { pickAutoTargetWordForBoard } from './hundredAutoTargetWord';
+import { clampPickupTargetWordLength, pickAutoTargetWordForBoard } from './hundredAutoTargetWord';
 import {
-  countPlacedWordOccurrences,
-  hundredPickupMinOccurrences,
-} from './hundredPickupOccurrences';
+  inferPickupCharsetFromWord,
+  normalizePickupCharset,
+  pickAutoTargetWordForPickupCharset,
+  robReplayTargetLength,
+  type PickupCharset,
+} from './hundredPickupCharset';
 import { firestoreSafeJson, gridToFirestoreRows } from './hundredRoomBoard';
-import { WORKER_CODE } from './puzzleWorker';
+import { generatePickupBoardReliable } from './hundredPickupFeasibility';
+import { clearHundredRoomPlayersForNewRound } from './hundredRoomPlayer';
+import { syncHundredPublicForNewRound } from './hundredPublicRoundSync';
 
 const RK_LAST_AUTO_WORD_KEY = 'rk_hundred_last_auto_word';
-const TARGET_COVERAGE = 0.85;
-const MAX_ATTEMPTS = 24;
 
-function readLastAutoWord(): string {
+function readLastAutoWord(charset: PickupCharset): string {
   try {
-    return localStorage.getItem(RK_LAST_AUTO_WORD_KEY) || '';
+    return localStorage.getItem(`${RK_LAST_AUTO_WORD_KEY}_${charset}`) || '';
   } catch {
     return '';
   }
 }
 
-function writeLastAutoWord(word: string): void {
+function writeLastAutoWord(charset: PickupCharset, word: string): void {
   try {
-    localStorage.setItem(RK_LAST_AUTO_WORD_KEY, word);
+    localStorage.setItem(`${RK_LAST_AUTO_WORD_KEY}_${charset}`, word);
   } catch {
     /* ignore */
   }
@@ -41,119 +43,31 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   }
 }
 
-function runPickupWorkerOnce(
-  cols: number,
-  rows: number,
-  targetWord: string,
-  seed: number,
-): Promise<{ grid: string[][]; placedWords: unknown[]; density?: number }> {
-  return new Promise((resolve, reject) => {
-    const blob = new Blob([WORKER_CODE], { type: 'application/javascript' });
-    const worker = new Worker(URL.createObjectURL(blob));
-
-    const cleanup = () => {
-      try {
-        worker.terminate();
-      } catch {
-        /* ignore */
-      }
-    };
-
-    const timer = window.setTimeout(() => {
-      cleanup();
-      reject(new Error('worker-timeout'));
-    }, 12_000);
-
-    worker.onmessage = (e) => {
-      window.clearTimeout(timer);
-      const result = e.data as {
-        grid?: string[][];
-        placedWords?: unknown[];
-        density?: number;
-      };
-      const grid = result?.grid;
-      if (!Array.isArray(grid) || grid.length === 0) {
-        cleanup();
-        reject(new Error('empty-grid'));
-        return;
-      }
-      resolve({
-        grid,
-        placedWords: Array.isArray(result.placedWords) ? result.placedWords : [],
-        density: typeof result.density === 'number' ? result.density : undefined,
-      });
-      cleanup();
-    };
-    worker.onerror = (err) => {
-      window.clearTimeout(timer);
-      cleanup();
-      reject(err);
-    };
-
-    worker.postMessage({
-      category: 'pickup',
-      size: cols,
-      cols,
-      rows,
-      dictionary: [targetWord],
-      targetWord,
-      prohibitedWords: PROHIBITED_WORDS,
-      isKanji: false,
-      seed,
-      isKatakana: false,
-    });
-  });
-}
-
-function isValidPlacedWords(placedWords: unknown[]): boolean {
-  if (!Array.isArray(placedWords) || placedWords.length === 0) return false;
-  return placedWords.some(
-    (pw) =>
-      pw &&
-      typeof pw === 'object' &&
-      typeof (pw as { word?: unknown }).word === 'string' &&
-      Array.isArray((pw as { occurrences?: unknown }).occurrences) &&
-      ((pw as { occurrences: unknown[] }).occurrences.length ?? 0) > 0,
-  );
-}
-
 async function generatePickupBoard(
   cols: number,
   rows: number,
   targetWord: string,
+  pickupCharset: PickupCharset,
 ): Promise<{ grid: string[][]; placedWords: unknown[] } | null> {
-  const minOccurrences = hundredPickupMinOccurrences(cols, targetWord, rows);
-  let best: { grid: string[][]; placedWords: unknown[]; coverage: number; occurrences: number } | null =
-    null;
+  const r = generatePickupBoardReliable(cols, rows, targetWord, pickupCharset, {
+    maxAttempts: 48,
+  });
+  if (!r) return null;
+  return { grid: r.grid, placedWords: r.placedWords };
+}
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    const seed = Math.floor(Math.random() * 1_000_000);
-    let r: { grid: string[][]; placedWords: unknown[]; density?: number };
-    try {
-      r = await runPickupWorkerOnce(cols, rows, targetWord, seed);
-    } catch {
-      continue;
-    }
-    if (!isValidPlacedWords(r.placedWords)) continue;
-
-    const coverage = typeof r.density === 'number' ? r.density : 0;
-    const occurrences = countPlacedWordOccurrences(r.placedWords);
-    if (
-      !best ||
-      occurrences > best.occurrences ||
-      (occurrences === best.occurrences && coverage > best.coverage)
-    ) {
-      best = { grid: r.grid, placedWords: r.placedWords, coverage, occurrences };
-    }
-    if (coverage >= TARGET_COVERAGE && occurrences >= minOccurrences) {
-      return { grid: r.grid, placedWords: r.placedWords };
-    }
+function pickRoboReplayTargetWord(
+  pickupCharset: PickupCharset,
+  cols: number,
+  rows: number,
+  previousTargetWord: string,
+  exclude: string[],
+): string | null {
+  const wordLength = robReplayTargetLength(pickupCharset, previousTargetWord);
+  if (pickupCharset === 'hiragana') {
+    return pickAutoTargetWordForBoard(cols, rows, clampPickupTargetWordLength(wordLength), { exclude });
   }
-
-  if (best && best.occurrences > 0) {
-    return { grid: best.grid, placedWords: best.placedWords };
-  }
-  return null;
+  return pickAutoTargetWordForPickupCharset(pickupCharset, cols, rows, wordLength, { exclude });
 }
 
 export type HundredRoboReplayResult =
@@ -161,7 +75,7 @@ export type HundredRoboReplayResult =
   | { ok: false; message: string };
 
 /**
- * クリア後「らくだロボでもう一回」: 同じ盤面サイズ・文字数で新しい探すことばを選び、hundred_rooms を差し替える。
+ * クリア後「らくだロボでもう一回」: 同じ盤面サイズ・文字種で新しい探すことばを選び、hundred_rooms を差し替える。
  */
 export async function replayHundredPickupWithRoboWord(params: {
   roomId: string;
@@ -175,19 +89,26 @@ export async function replayHundredPickupWithRoboWord(params: {
     return { ok: false, message: 'ログインが必要です' };
   }
 
-  const prev = (previousTargetWord || '').trim();
-  const wordLength = Math.max(1, Array.from(prev).length);
-  const exclude = [prev, readLastAutoWord()].filter(Boolean);
+  const roomRef = doc(db, 'hundred_rooms', roomId);
+  const roomSnap = await getDoc(roomRef);
+  const roomData = roomSnap.exists() ? (roomSnap.data() as Record<string, unknown>) : null;
+  const storedCharset = normalizePickupCharset(roomData?.pickupCharset);
+  const inferredCharset = inferPickupCharsetFromWord(previousTargetWord);
+  const pickupCharset = inferredCharset ?? storedCharset;
 
-  const targetWord = pickAutoTargetWordForBoard(cols, rows, wordLength, { exclude });
+  const prev = (previousTargetWord || '').trim();
+  const exclude = [prev, readLastAutoWord(pickupCharset)].filter(Boolean);
+
+  const targetWord = pickRoboReplayTargetWord(pickupCharset, cols, rows, prev, exclude);
   if (!targetWord) {
+    const unit = pickupCharset === 'digit' ? '桁' : '文字';
+    const len = robReplayTargetLength(pickupCharset, prev);
     return {
       ok: false,
-      message: `${wordLength}文字のことばが見つかりませんでした。盤面サイズを変えてお試しください。`,
+      message: `${len}${unit}のことばが見つかりませんでした。盤面サイズを変えてお試しください。`,
     };
   }
 
-  const roomRef = doc(db, 'hundred_rooms', roomId);
   await withTimeout(
     setDoc(roomRef, { problemsGenerating: true, problemsReady: false }, { merge: true }),
     8000,
@@ -195,12 +116,12 @@ export async function replayHundredPickupWithRoboWord(params: {
   );
 
   try {
-    const board = await generatePickupBoard(cols, rows, targetWord);
+    const board = await generatePickupBoard(cols, rows, targetWord, pickupCharset);
     if (!board) {
       return { ok: false, message: '盤面の生成に失敗しました。もう一度お試しください。' };
     }
 
-    const gridRows = gridToFirestoreRows(board.grid);
+    const gridRows = gridToFirestoreRows(board.grid, pickupCharset);
     if (gridRows.length === 0 || gridRows.some((row) => !row || row.length === 0)) {
       return { ok: false, message: '盤面データが不正です。もう一度お試しください。' };
     }
@@ -212,6 +133,7 @@ export async function replayHundredPickupWithRoboWord(params: {
         {
           status: 'playing',
           hundredMode: 'pickup',
+          pickupCharset,
           gridRows,
           words: firestoreSafeJson(board.placedWords ?? []),
           targetWord,
@@ -220,8 +142,8 @@ export async function replayHundredPickupWithRoboWord(params: {
           boardRows: rows,
           gameTimeLimitSec: 0,
           foundWords: [],
-          endReason: null,
-          endedAt: null,
+          endReason: deleteField(),
+          endedAt: deleteField(),
           startedAt: serverTimestamp(),
           startedBy: uid,
           problemsGenerating: false,
@@ -234,7 +156,19 @@ export async function replayHundredPickupWithRoboWord(params: {
       'set-playing-doc',
     );
 
-    writeLastAutoWord(targetWord);
+    writeLastAutoWord(pickupCharset, targetWord);
+    await syncHundredPublicForNewRound({
+      roomId,
+      targetWord,
+      boardCols: cols,
+      boardRows: rows,
+      pickupCharset,
+    }).catch((e) => {
+      console.warn('[hundredRoboReplay] sync hundred_public failed', e);
+    });
+    await clearHundredRoomPlayersForNewRound(roomId).catch((e) => {
+      console.warn('[hundredRoboReplay] clear players for new round failed', e);
+    });
     return { ok: true, targetWord };
   } catch (e) {
     console.error('[hundredRoboReplay] failed', e);

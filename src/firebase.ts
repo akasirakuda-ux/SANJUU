@@ -1,5 +1,11 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
+import {
+  getAuth,
+  getRedirectResult,
+  initializeAuth,
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+} from 'firebase/auth';
 import { initializeFirestore } from 'firebase/firestore';
 
 // Initialize Firebase SDK
@@ -21,10 +27,29 @@ const app = initializeApp(firebaseConfig);
  */
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
+  experimentalLongPollingOptions: { timeoutSeconds: 30 },
 });
-export const auth = getAuth(app);
 
-/** 実行時にどの JSON が読み込まれたか確認用（apiKey は出さない） */
+/**
+ * persistence / popupRedirectResolver を起動時に同期設定する。
+ * getAuth + 非同期 setPersistence だと、匿名ログインが先に走って Google セッションが残らないことがある。
+ */
+let auth;
+try {
+  auth = initializeAuth(app, {
+    persistence: browserLocalPersistence,
+    popupRedirectResolver: browserPopupRedirectResolver,
+  });
+} catch {
+  auth = getAuth(app);
+}
+export { auth };
+
+/** リダイレクト復帰直後に getRedirectResult を取りこぼさない（useAuth より先に開始） */
+export const authRedirectResultPromise =
+  typeof window !== 'undefined' ? getRedirectResult(auth) : Promise.resolve(null);
+
+/** 実行時にどの JSON が読み込まれたか確認用（apiKey は出さない）。本番コンソールはノイズにしない */
 if (import.meta.env.DEV) {
   console.info('[Firebase] firebase-applet-config.json 読み込み済み', {
     projectId: cfg.projectId,
@@ -32,8 +57,6 @@ if (import.meta.env.DEV) {
     appId: cfg.appId,
     firestoreDatabase: '(default)',
   });
-} else {
-  console.info('[Firebase] 初期化', cfg.projectId);
 }
 
 // DevTools から現在ログイン状態を確認できるようにする（本番では露出しない）
@@ -44,11 +67,6 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   (window as any).rkAuth = auth;
   (window as any).rkDb = db;
 }
-
-// Ensure persistence is set to local to maintain session in iframes
-setPersistence(auth, browserLocalPersistence).catch((error) => {
-  console.error("Auth persistence error:", error);
-});
 
 // NOTE: Do not "probe" Firestore on boot.
 // It adds an extra read for every visitor and can worsen quota spikes (429).

@@ -1,7 +1,5 @@
 import type { FoundWord, Point } from '../types';
-
-// リボン色は「人ごと固定」ではなく、見つけた瞬間にランダムで割り当てた色を保存して共有する。
-const FALLBACK_COLOR = '#888888';
+import { rkBandColorForOccurrenceKey } from './rkTheme';
 
 function asPoint(v: unknown): Point | null {
   if (!v || typeof v !== 'object') return null;
@@ -28,12 +26,18 @@ export function normalizeHundredFoundRaw(raw: unknown): FoundWord | null {
       : typeof o.n === 'string'
         ? o.n
         : undefined;
+  const userEmoji =
+    typeof o.userEmoji === 'string'
+      ? o.userEmoji
+      : typeof o.m === 'string'
+        ? o.m
+        : undefined;
   const color =
     typeof o.color === 'string' && o.color
       ? o.color
       : typeof o.c === 'string' && o.c
         ? o.c
-        : FALLBACK_COLOR;
+        : rkBandColorForOccurrenceKey(word, start, end);
   return {
     word,
     start,
@@ -41,6 +45,7 @@ export function normalizeHundredFoundRaw(raw: unknown): FoundWord | null {
     color,
     isHint: !!o.isHint,
     userName,
+    userEmoji,
     playerId,
   };
 }

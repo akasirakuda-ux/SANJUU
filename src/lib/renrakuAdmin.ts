@@ -32,3 +32,18 @@ export function isRenrakuAdmin(user: User | null | undefined): boolean {
   if (ADMIN_UIDS.includes(user.uid)) return true;
   return collectEmails(user).some((e) => normalizeEmailForRenrakuAdmin(e) === canonicalAdminEmail);
 }
+
+/**
+ * Firestore ルールの isAdmin() は ID トークン（email クレーム）で判定する。
+ * クライアントだけ isRenrakuAdmin=true でも、トークンが古いと一覧が permission-denied になることがある。
+ */
+export async function ensureRenrakuAdminFirestoreAuth(user: User | null | undefined): Promise<boolean> {
+  if (!user || !isRenrakuAdmin(user)) return false;
+  try {
+    await user.getIdToken(true);
+    return true;
+  } catch (e) {
+    console.warn('[renrakuAdmin] getIdToken(true) failed', e);
+    return false;
+  }
+}

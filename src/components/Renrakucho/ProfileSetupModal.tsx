@@ -1,8 +1,13 @@
 import React from 'react';
+import type { User } from 'firebase/auth';
 import { AnimatePresence, motion } from 'framer-motion';
-import { PROHIBITED_WORDS } from '../../constants';
+import { RK_GATE_NICK_DISPLAY_CLASS } from '../../lib/rakudaGate';
 import { vibrate } from '../../lib/utils';
+import {
+  getRakudaDisplayNameValidationError,
+} from '../../lib/rakudaHubShell';
 import { btnPrimary, cardClass } from '../../ui/policy';
+import RakudaPlayerPresetChips from '../RakudaPlayerPresetChips';
 
 const ProfileSetupModal: React.FC<{
   showProfileSetup: boolean;
@@ -14,7 +19,20 @@ const ProfileSetupModal: React.FC<{
   setNotification: React.Dispatch<React.SetStateAction<{ type: 'success' | 'error'; text: string } | null>>;
   setNickname: (n: string) => void;
   setUserEmoji: (e: string) => void;
-}> = ({ showProfileSetup, setShowProfileSetup, tempName, setTempName, tempEmoji, setTempEmoji, setNotification, setNickname, setUserEmoji }) => {
+  /** 連絡帳管理者は「らくだ珈琲」公式名をニックに使える */
+  authUser?: User | null;
+}> = ({
+  showProfileSetup,
+  setShowProfileSetup,
+  tempName,
+  setTempName,
+  tempEmoji,
+  setTempEmoji,
+  setNotification,
+  setNickname,
+  setUserEmoji,
+  authUser,
+}) => {
   return (
     <AnimatePresence>
       {showProfileSetup && (
@@ -22,12 +40,12 @@ const ProfileSetupModal: React.FC<{
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[300] bg-slate-50/90 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[300] bg-rk-slate-50/90 backdrop-blur-sm flex items-center justify-center p-4"
         >
           <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className={`${cardClass} w-full max-w-sm space-y-4`}>
             <div className="text-center space-y-2">
-              <h2 className="text-sm font-medium text-slate-700">掲示板のじゅんび</h2>
-              <p className="text-xs text-slate-600">
+              <h2 className="text-sm font-medium text-rk-slate-700">掲示板のじゅんび</h2>
+              <p className="text-xs text-rk-slate-600">
                 みんなに表示される名前と、
                 <br />
                 あなたの「顔」になる絵文字をきめてね。
@@ -36,19 +54,19 @@ const ProfileSetupModal: React.FC<{
 
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">なまえ</label>
+                <label className="text-xs font-black text-rk-slate-400 uppercase tracking-widest ml-1">なまえ</label>
                 <input
                   type="text"
                   value={tempName}
                   onChange={(e) => setTempName(e.target.value)}
                   placeholder="ななしさん"
                   maxLength={10}
-                  className="w-full h-12 p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-200 transition-colors text-sm"
+                  className={`w-full h-12 p-3 bg-rk-slate-50 border border-rk-slate-200 rounded-xl focus:outline-none focus:border-rk-amber-200 transition-colors text-sm ${RK_GATE_NICK_DISPLAY_CLASS}`}
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">あなたの絵文字（1つ）</label>
+                <label className="text-xs font-black text-rk-slate-400 uppercase tracking-widest ml-1">あなたの絵文字（1つ）</label>
                 <div className="flex gap-3 items-center">
                   <input
                     type="text"
@@ -62,10 +80,10 @@ const ProfileSetupModal: React.FC<{
                       const chars = Array.from(val);
                       setTempEmoji(chars[chars.length - 1]);
                     }}
-                    placeholder="🐪"
-                    className="w-20 h-12 text-center bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-amber-200 transition-colors text-sm"
+                    placeholder="👤"
+                    className="w-20 h-12 text-center bg-rk-slate-50 border border-rk-slate-200 rounded-xl focus:outline-none focus:border-rk-amber-200 transition-colors text-sm"
                   />
-                  <p className="text-[10px] text-slate-600 leading-tight">
+                  <p className="text-[10px] text-rk-slate-600 leading-tight">
                     好きな絵文字を
                     <br />
                     貼り付けてね！
@@ -73,6 +91,13 @@ const ProfileSetupModal: React.FC<{
                 </div>
               </div>
             </div>
+
+            <RakudaPlayerPresetChips
+              onPick={(emoji, nick) => {
+                setTempEmoji(emoji);
+                setTempName(nick);
+              }}
+            />
 
             <button
               onClick={() => {
@@ -85,9 +110,13 @@ const ProfileSetupModal: React.FC<{
                   return;
                 }
 
-                const hasProhibitedWord = PROHIBITED_WORDS.some((word) => tempName.toLowerCase().includes(word));
-                if (hasProhibitedWord) {
-                  setNotification({ type: 'error', text: '不適切な言葉が含まれています。' });
+                const displayNameError = getRakudaDisplayNameValidationError(
+                  tempName.trim(),
+                  tempEmoji.trim(),
+                  authUser,
+                );
+                if (displayNameError) {
+                  setNotification({ type: 'error', text: displayNameError });
                   return;
                 }
 
@@ -109,7 +138,7 @@ const ProfileSetupModal: React.FC<{
                 setNotification({ type: 'success', text: '掲示板は見られます（投稿する前に登録してください）' });
                 vibrate(10);
               }}
-              className="w-full h-11 rounded-xl border-2 border-slate-200 bg-white text-slate-700 font-black text-sm shadow-sm active:scale-[0.99] transition-transform"
+              className="w-full h-11 rounded-xl border-2 border-rk-slate-200 bg-rk-white text-rk-slate-700 font-black text-sm shadow-sm active:scale-[0.99] transition-transform"
             >
               あとで（見るだけ）
             </button>

@@ -13,8 +13,9 @@ import {
   writeBatch,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
+import { isProtectedRenrakuAdminUid } from '../constants/renrakuAdmin';
 
-/** 掲示板投稿の保持期間（30 日） */
+/** 掲示板投稿の保持期間（30 日）— みんなの会話のみ。連絡事項（postKind=announcement）は永久 */
 export const PUBLIC_MESSAGES_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 1 回の連絡帳オープンで試みる削除の上限（軽量化） */
@@ -63,7 +64,13 @@ export async function cleanupStalePublicMessages(db: Firestore): Promise<number>
     if (snap.empty) break;
 
     lastVisible = snap.docs[snap.docs.length - 1];
-    const deletable = snap.docs.filter((d) => d.data().pinned !== true);
+    const deletable = snap.docs.filter((d) => {
+      const data = d.data();
+      if (data.pinned === true) return false;
+      if (data.postKind == 'announcement') return false;
+      if (isProtectedRenrakuAdminUid(data.fromUserUid)) return false;
+      return true;
+    });
 
     for (const d of deletable) {
       if (deleted >= MAX_DELETES_PER_RUN) break;

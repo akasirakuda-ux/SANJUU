@@ -3,6 +3,8 @@ export type StampMigrationResult = {
   completedDates: string[];
   /** YYYY-MM-DD (>=3 clears) */
   specialDates: string[];
+  /** 2枚以上クリアした日の枚数 */
+  dailyClearCounts: Record<string, number>;
   /** inclusive range covered by logs */
   range: { min: string; max: string } | null;
 };
@@ -47,14 +49,15 @@ export function computeStampsFromLogs(params: {
   }
 
   const completedDates = Array.from(counts.keys()).sort();
-  const specialDates = completedDates.filter((k) => (counts.get(k) || 0) >= 3);
+  const dailyClearCounts: Record<string, number> = {};
+  const specialDates: string[] = [];
 
   const range =
     completedDates.length > 0
       ? { min: completedDates[0]!, max: completedDates[completedDates.length - 1]! }
       : null;
 
-  return { completedDates, specialDates, range };
+  return { completedDates, specialDates, dailyClearCounts, range };
 }
 
 function uniqSorted(dates: string[]): string[] {
@@ -69,18 +72,27 @@ function uniqSorted(dates: string[]): string[] {
 export function migrateStampArrays(params: {
   existingCompletedDates: string[] | undefined;
   existingSpecialDates: string[] | undefined;
+  existingDailyClearCounts?: Record<string, number> | undefined;
   computedCompletedDates: string[];
   computedSpecialDates: string[];
+  computedDailyClearCounts: Record<string, number>;
   computedRange: { min: string; max: string } | null;
-}): { completedDates: string[]; specialDates: string[]; changed: boolean } {
+}): {
+  completedDates: string[];
+  specialDates: string[];
+  dailyClearCounts: Record<string, number>;
+  changed: boolean;
+} {
   const existingCompleted = Array.isArray(params.existingCompletedDates) ? params.existingCompletedDates : [];
   const existingSpecial = Array.isArray(params.existingSpecialDates) ? params.existingSpecialDates : [];
+  const existingDaily = { ...(params.existingDailyClearCounts ?? {}) };
 
   // If we couldn't compute anything, do nothing.
   if (!params.computedRange) {
     return {
       completedDates: uniqSorted(existingCompleted),
       specialDates: uniqSorted(existingSpecial),
+      dailyClearCounts: existingDaily,
       changed: false,
     };
   }
@@ -97,10 +109,22 @@ export function migrateStampArrays(params: {
     ...existingSpecial.filter(outside),
     ...params.computedSpecialDates,
   ]);
+  const nextDaily: Record<string, number> = {};
+  for (const [key, value] of Object.entries(existingDaily)) {
+    if (outside(key)) nextDaily[key] = value;
+  }
+  for (const [key, value] of Object.entries(params.computedDailyClearCounts)) {
+    nextDaily[key] = value;
+  }
 
   const prevCompleted = uniqSorted(existingCompleted);
   const prevSpecial = uniqSorted(existingSpecial);
-  const changed = prevCompleted.join(',') !== nextCompleted.join(',') || prevSpecial.join(',') !== nextSpecial.join(',');
+  const prevDailyJson = JSON.stringify(existingDaily);
+  const nextDailyJson = JSON.stringify(nextDaily);
+  const changed =
+    prevCompleted.join(',') !== nextCompleted.join(',') ||
+    prevSpecial.join(',') !== nextSpecial.join(',') ||
+    prevDailyJson !== nextDailyJson;
 
-  return { completedDates: nextCompleted, specialDates: nextSpecial, changed };
+  return { completedDates: nextCompleted, specialDates: nextSpecial, dailyClearCounts: nextDaily, changed };
 }

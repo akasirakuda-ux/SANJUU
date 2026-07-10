@@ -53,11 +53,11 @@ const HundredProblemList: React.FC<{ roomId: string; className?: string }> = ({ 
   }, [roomId]);
 
   if (loadError) {
-    return <p className="text-sm text-rose-600">{loadError}</p>;
+    return <p className="text-sm text-rk-rose-600">{loadError}</p>;
   }
 
   if (rows.length === 0) {
-    return <p className="text-sm text-slate-500">問題一覧はまだありません。</p>;
+    return <p className="text-sm text-rk-slate-500">問題一覧はまだありません。</p>;
   }
 
   return (
@@ -67,7 +67,7 @@ const HundredProblemList: React.FC<{ roomId: string; className?: string }> = ({ 
     >
       <table className="w-full text-sm border-collapse">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs font-black uppercase tracking-wide text-slate-400">
+          <tr className="border-b border-rk-slate-200 text-left text-xs font-black uppercase tracking-wide text-rk-slate-400">
             <th className="py-2 pr-3 whitespace-nowrap">No.</th>
             <th className="py-2 pr-3 min-w-[8rem]">内容</th>
             <th className="py-2 pr-3 whitespace-nowrap">正誤</th>
@@ -76,7 +76,7 @@ const HundredProblemList: React.FC<{ roomId: string; className?: string }> = ({ 
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} className="border-b border-slate-100 text-slate-700">
+            <tr key={r.id} className="border-b border-rk-slate-100 text-rk-slate-700">
               <td className="py-2 pr-3 align-top tabular-nums">{r.order}</td>
               <td className="py-2 pr-3 align-top">{r.title || '—'}</td>
               <td className="py-2 pr-3 align-top whitespace-nowrap">

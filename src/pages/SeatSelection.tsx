@@ -1,37 +1,66 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import type { User } from 'firebase/auth';
 import { AnimatePresence, motion } from 'motion/react';
-import { Heart, Moon } from 'lucide-react';
+import { LayoutGrid, Moon, Grid3x3, BookOpen } from 'lucide-react';
 import KotobaLogo from '../components/KotobaLogo';
 import { RAKUDA_PROFILE_SETTINGS_ANCHOR_ID } from '../components/AppHeader';
 import ModeEntryLayout from '../components/ModeEntryLayout';
-import QRCode from 'qrcode';
+import RakudaFloatingBackdrop from '../components/RakudaFloatingBackdrop';
+import RakudaTopStatusBadge from '../components/RakudaTopStatusBadge';
+import RakudaHubPresenceRow from '../components/RakudaHubPresenceRow';
+import { hubVisitorTotalForDisplay } from '../lib/hubVisitorStats';
 
-import { User } from 'firebase/auth';
-import { btnGhost } from '../ui/policy';
+import { btnGhost, hubMenuBtn, hubMenuBtnHalfWFill } from '../ui/policy';
+import { REVERSI_RECRUIT_BADGE_CLASS, REVERSI_RECRUIT_HOST_BADGE_CLASS } from '../lib/reversiConfig';
+import {
+  GOMOKU_RECRUIT_BADGE_CLASS,
+  GOMOKU_RECRUIT_HOST_BADGE_CLASS,
+} from '../lib/gomokuConfig';
 import type { UserAccount } from '../types';
 import {
-  appendRakudaProfileQuery,
-  rakudaCommunityBulletinUrl,
-  sanjuuTopUrlWithRakudaProfile,
-} from '../lib/sanjuuWebOrigin';
+  getRakudaDisplayNameValidationError,
+  hasCompleteRakudaHandoffProfile,
+  rkCssColor,
+  sanjuuRecruitBoardUrlWithRakudaProfile,
+} from '../lib/rakudaHubShell';
+import { RK_GATE_NICK_DISPLAY_CLASS } from '../lib/rakudaGate';
 import { vibrate } from '../lib/utils';
+import { OUEN_NOTE_TITLE, OUEN_NOTE_MIN_STAMPS, OUEN_NOTE_HUB_LIVE, OUEN_NOTE_HUB_TESTING } from '../lib/ouenNoteConfig';
+import OuenNotePrepPopup from '../components/OuenNote/OuenNotePrepPopup';
+import { trackRakudaHubMenu } from '../lib/rakudaGaEvents';
 
 interface SeatSelectionProps {
   onSelectWindow: () => void;
-  onOpenHundredHub: () => void;
+  onOpenKeijiban: () => void;
   onOpenRenrakuchoAdmin: () => void;
   onSelectQuietRoom: () => void;
   onOpenStampCard: () => void;
+  onOpenSlidePuzzle: () => void;
+  onOpenSudoku: () => void;
+  onOpenOthello: () => void;
+  onOpenGomoku: () => void;
+  onOpenRelayStory: () => void;
+  onOpenOuenNote: () => void | Promise<void>;
   onOpenSettings: () => void;
   isOnline: boolean;
-  onGoogleLogin?: () => void;
-  firebaseUser?: User | null;
   hasActiveRecruitments?: boolean;
+  /** hundred_public に最終閲覧より新しい募集がある */
+  hundredRecruitHasNew?: boolean;
+  /** 参加可能なリバーシオンライン募集がある */
+  reversiRecruitHasOpen?: boolean;
+  /** 自分のリバーシ募集が待機中 */
+  reversiRecruitHostWaiting?: boolean;
+  /** 参加可能な五目並べオンライン募集がある */
+  gomokuRecruitHasOpen?: boolean;
+  /** 自分の五目並べ募集が待機中 */
+  gomokuRecruitHostWaiting?: boolean;
   /** 連絡帳に未読（最終閲覧より新しい投稿） */
   renrakuchoHasUnread?: boolean;
-  /** 掲示板 URL や連絡帳オーバー中は `/api/play/rooms` を叩かない */
-  suppressSanjuuRoomPoll?: boolean;
+  /** ノートに未読（新しい相談・コメント） */
+  ouenNoteHasUnread?: boolean;
   viewerCount?: number;
+  hubPresencePeers?: readonly import('../hooks/usePresence').HubPresencePeer[];
+  hubVisitorTotal?: number;
   nickname: string;
   setNickname: (name: string) => void;
   userEmoji: string;
@@ -40,25 +69,43 @@ interface SeatSelectionProps {
   activeUserId: string;
   switchAccount: (userId: string) => void;
   createAccount: () => string;
+  /** 公式名ニックは連絡帳管理者のみ許可（匿名は不可のまま） */
+  firebaseUser?: User | null;
+  isAuthReady?: boolean;
+  onGoogleLogin?: () => void;
+  onGoogleLoginPopup?: () => void | Promise<void>;
+  greenGateActive?: boolean;
+  shussekiRegular?: boolean;
 }
 
-const hubBtn =
-  'relative w-full max-w-md min-h-[52px] px-3 py-2 flex items-center justify-center gap-2 rounded-xl text-sm font-medium shadow-sm border active:scale-[0.99] transition-transform overflow-visible';
+const hubBtn = hubMenuBtn.replace('font-medium', 'font-black');
+const hubBtnHalf = hubMenuBtnHalfWFill.replace('font-medium', 'font-black');
 
 const SeatSelection: React.FC<SeatSelectionProps> = ({
   onSelectWindow,
-  onOpenHundredHub: _onOpenHundredHubFromParent,
+  onOpenKeijiban,
   onOpenRenrakuchoAdmin: _onOpenRenrakuchoAdmin,
   onSelectQuietRoom,
   onOpenStampCard,
+  onOpenSlidePuzzle,
+  onOpenSudoku,
+  onOpenOthello,
+  onOpenGomoku,
+  onOpenRelayStory,
+  onOpenOuenNote,
   onOpenSettings,
-  isOnline: _isOnline,
-  onGoogleLogin,
-  firebaseUser,
-  hasActiveRecruitments: _hasActiveRecruitments,
+  isOnline,
+  hasActiveRecruitments = false,
+  hundredRecruitHasNew = false,
+  reversiRecruitHasOpen = false,
+  reversiRecruitHostWaiting = false,
+  gomokuRecruitHasOpen = false,
+  gomokuRecruitHostWaiting = false,
   renrakuchoHasUnread = false,
-  suppressSanjuuRoomPoll = false,
-  viewerCount: _viewerCount,
+  ouenNoteHasUnread = false,
+  viewerCount,
+  hubPresencePeers = [],
+  hubVisitorTotal,
   nickname,
   setNickname,
   userEmoji,
@@ -67,186 +114,31 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
   activeUserId,
   switchAccount,
   createAccount,
+  firebaseUser,
+  isAuthReady = true,
+  onGoogleLogin,
+  onGoogleLoginPopup,
+  greenGateActive = false,
+  shussekiRegular = false,
 }) => {
   const [showRegisteredMessage, setShowRegisteredMessage] = useState(false);
-  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
-  const [qrDataUrl, setQrDataUrl] = useState<string>('');
-  /** 三十エンジン上で未開始の募集ルームがあるか（`/api/play/rooms`） */
-  const [sanjuuRecruitOpen, setSanjuuRecruitOpen] = useState(false);
-
-  const LOGIN_PROMPT_DISMISSED_KEY = 'rk_login_prompt_dismissed_v1';
-
-  useEffect(() => {
-    // 初回ユーザー向け：オンライン（Googleログイン）導線を明確にする。
-    // 既にログイン済み / ログイン機能が無い / 一度閉じたことがある場合は出さない。
-    if (firebaseUser) {
-      setShowLoginPrompt(false);
-      return;
-    }
-    if (!onGoogleLogin) return;
-    try {
-      const dismissed = localStorage.getItem(LOGIN_PROMPT_DISMISSED_KEY) === '1';
-      if (!dismissed) setShowLoginPrompt(true);
-    } catch {
-      // localStorage が使えない環境でも、とりあえず1回は見せる
-      setShowLoginPrompt(true);
-    }
-  }, [firebaseUser, onGoogleLogin]);
-
-  const dismissLoginPrompt = () => {
-    setShowLoginPrompt(false);
-    try {
-      localStorage.setItem(LOGIN_PROMPT_DISMISSED_KEY, '1');
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const loginPrompt = useMemo(() => {
-    if (!showLoginPrompt || firebaseUser || !onGoogleLogin) return null;
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: -6 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0 }}
-        className="w-full max-w-md mx-auto rounded-xl border-2 border-sky-300 bg-sky-50 text-slate-700 shadow-sm px-3 py-2 flex items-start justify-between gap-3"
-        role="status"
-      >
-        <div className="min-w-0">
-          <div className="text-[11px] font-black">はじめての方へ</div>
-          <div className="text-[10px] font-medium leading-relaxed text-slate-600 mt-0.5">
-            下の <span className="font-black">🔑 いまログインする</span> から Google でログインすると、
-            みんなであそぶ・連絡帳が安定します。
-          </div>
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void onGoogleLogin()}
-              className="px-3 py-2 rounded-xl border border-sky-300 bg-white text-slate-700 text-[11px] font-black shadow-sm active:scale-95 transition-transform"
-            >
-              🔑 いまログインする
-            </button>
-            <button
-              type="button"
-              onClick={dismissLoginPrompt}
-              className="px-2 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 text-[10px] font-bold hover:bg-slate-50"
-            >
-              とじる
-            </button>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={dismissLoginPrompt}
-          className="shrink-0 w-8 h-8 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-black hover:bg-slate-50"
-          aria-label="閉じる"
-          title="閉じる"
-        >
-          ×
-        </button>
-      </motion.div>
-    );
-  }, [showLoginPrompt, firebaseUser, onGoogleLogin]);
-
+  const [showOuenNotePrepPopup, setShowOuenNotePrepPopup] = useState(false);
   const handleRegister = () => {
     setShowRegisteredMessage(true);
     setTimeout(() => setShowRegisteredMessage(false), 3000);
   };
 
-  const hasProfile = useMemo(() => {
-    return !!(nickname && nickname.trim()) && !!(userEmoji && userEmoji.trim());
-  }, [nickname, userEmoji]);
+  const hubViewerCount = viewerCount;
 
-  const isStreamMode = useMemo(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const v = params.get('stream');
-      if (v === '1') return true;
-      if (v === '0') return false;
-    } catch {
-      // ignore
-    }
-    try {
-      return window.localStorage.getItem('rk_stream_mode') === '1';
-    } catch {
-      return false;
-    }
-  }, []);
+  const hubTotalDisplay = useMemo(() => {
+    const n = typeof hubVisitorTotal === 'number' ? hubVisitorTotal : 0;
+    return hubVisitorTotalForDisplay(n);
+  }, [hubVisitorTotal]);
 
-  // Public QR (canonical URL)
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const url = 'https://rakuda.coffee/';
-        const dataUrl = await QRCode.toDataURL(url, {
-          // Center overlay (🐫) needs stronger error correction + a bit more quiet zone.
-          errorCorrectionLevel: 'H',
-          margin: 2,
-          scale: 7,
-          // 小豆色（あずきいろ）
-          color: { dark: '#96514D', light: '#ffffff' },
-        });
-        if (!cancelled) setQrDataUrl(dataUrl);
-      } catch {
-        if (!cancelled) setQrDataUrl('');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (suppressSanjuuRoomPoll) {
-      setSanjuuRecruitOpen(false);
-      return () => {};
-    }
-    let cancelled = false;
-    let intervalId = 0;
-    let consecutiveFailures = 0;
-    const tick = async () => {
-      try {
-        const r = await fetch('/api/play/rooms', { cache: 'no-store' });
-        if (cancelled) return;
-        if (!r.ok) {
-          consecutiveFailures += 1;
-          if (consecutiveFailures >= 3 && intervalId) {
-            window.clearInterval(intervalId);
-            intervalId = 0;
-          }
-          setSanjuuRecruitOpen(false);
-          return;
-        }
-        consecutiveFailures = 0;
-        const j: unknown = await r.json();
-        if (!Array.isArray(j) || cancelled) return;
-        let open = false;
-        for (const row of j) {
-          if (typeof row !== 'object' || !row) continue;
-          const rec = row as Record<string, unknown>;
-          if (rec.started === true) continue;
-          open = true;
-          break;
-        }
-        if (!cancelled) setSanjuuRecruitOpen(open);
-      } catch {
-        if (cancelled) return;
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= 3 && intervalId) {
-          window.clearInterval(intervalId);
-          intervalId = 0;
-        }
-        setSanjuuRecruitOpen(false);
-      }
-    };
-    void tick();
-    intervalId = window.setInterval(() => void tick(), 20000);
-    return () => {
-      cancelled = true;
-      if (intervalId) window.clearInterval(intervalId);
-    };
-  }, [suppressSanjuuRoomPoll]);
+  const hasProfile = useMemo(
+    () => hasCompleteRakudaHandoffProfile({ emoji: userEmoji, nickname }),
+    [nickname, userEmoji]
+  );
 
   const requireProfile = (action: () => void) => {
     if (hasProfile) {
@@ -262,29 +154,16 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
     setTimeout(() => setShowRegisteredMessage(false), 2500);
   };
 
-  const streamToggleButton = (
+  const settingsButton = (
     <button
       type="button"
       onClick={() => {
-        try {
-          window.localStorage.setItem('rk_stream_mode', isStreamMode ? '0' : '1');
-        } catch {
-          // ignore
-        }
-        window.location.reload();
+        trackRakudaHubMenu('settings');
+        onOpenSettings();
       }}
-      className={`h-10 px-3 rounded-xl text-[11px] font-black border shadow-sm active:scale-95 transition-transform ${
-        isStreamMode ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-slate-900 border-slate-950 text-white'
-      }`}
-      aria-label="広告の表示を切り替え"
-      title="広告 なし/あり を切り替えます"
+      className={`w-10 h-10 flex items-center justify-center leading-none ${btnGhost}`}
+      aria-label="設定"
     >
-      広告 {isStreamMode ? 'なし' : 'あり'}
-    </button>
-  );
-
-  const settingsButton = (
-    <button type="button" onClick={onOpenSettings} className={`w-10 h-10 flex items-center justify-center leading-none ${btnGhost}`} aria-label="設定">
       <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
         <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.50-.38-1.03-.70-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
       </svg>
@@ -294,9 +173,9 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
   const profileBlock = (
     <div
       id={RAKUDA_PROFILE_SETTINGS_ANCHOR_ID}
-      className="w-full space-y-2 rounded-xl border-2 border-amber-400/75 bg-amber-50/98 shadow-md p-2.5 sm:p-3 scroll-mt-[calc(env(safe-area-inset-top)+5.5rem)]"
+      className="w-full space-y-2 rounded-xl border-2 border-rk-amber-400/75 bg-rk-amber-50/98 shadow-md p-2.5 sm:p-3 pb-3 scroll-mt-[calc(env(safe-area-inset-top)+5.5rem)]"
     >
-      <p className="text-[10px] font-medium text-slate-600 text-left pl-0.5">絵文字・ニックネーム</p>
+      <p className="text-[10px] font-medium text-rk-slate-600 text-left pl-0.5">絵文字・ニックネーム</p>
       <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
         <input
           type="text"
@@ -310,15 +189,15 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
             const chars = Array.from(val);
             setUserEmoji(chars[chars.length - 1] ?? '');
           }}
-          placeholder="🐫"
-          className="w-10 h-10 shrink-0 bg-slate-50 rounded-xl text-base text-center border border-slate-200 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-300/50"
+          placeholder="👤"
+          className="w-10 h-10 shrink-0 bg-rk-slate-50 rounded-xl text-base text-center border border-rk-slate-200 text-rk-slate-700 focus:outline-none focus:ring-2 focus:ring-rk-amber-300/50"
         />
         <input
           type="text"
           value={nickname}
           onChange={(e) => setNickname(e.target.value)}
           placeholder="なまえ..."
-          className="min-w-0 flex-1 h-10 bg-slate-50 border border-slate-200 rounded-xl px-2.5 text-sm font-medium text-slate-700 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-300/50"
+          className={`min-w-0 flex-1 h-10 bg-rk-slate-50 border border-rk-slate-200 rounded-xl px-2.5 text-sm font-medium placeholder:text-rk-slate-500 focus:outline-none focus:ring-2 focus:ring-rk-amber-300/50 ${RK_GATE_NICK_DISPLAY_CLASS}`}
         />
         <button
           type="button"
@@ -333,9 +212,15 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
               setTimeout(() => setShowRegisteredMessage(false), 2500);
               return;
             }
+            const displayNameError = getRakudaDisplayNameValidationError(nickname, userEmoji, firebaseUser);
+            if (displayNameError) {
+              window.dispatchEvent(new CustomEvent('SHOW_TOAST', { detail: displayNameError }));
+              vibrate(20);
+              return;
+            }
             handleRegister();
           }}
-          className="h-10 min-w-[2.75rem] px-1.5 sm:px-2 shrink-0 flex items-center justify-center rounded-xl bg-indigo-200 text-slate-700 text-xs sm:text-sm font-medium active:scale-95 transition-transform"
+          className="h-10 min-w-[2.75rem] px-1.5 sm:px-2 shrink-0 flex items-center justify-center rounded-xl bg-rk-indigo-200 text-rk-slate-700 text-xs sm:text-sm font-medium active:scale-95 transition-transform"
         >
           登録
         </button>
@@ -346,7 +231,7 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="text-[10px] font-medium text-slate-700 text-center bg-amber-50 border border-amber-200 p-2 rounded-xl"
+            className="text-[10px] font-medium text-rk-slate-700 text-center bg-rk-amber-50 border border-rk-amber-200 p-2 rounded-xl"
           >
             {hasProfile ? '登録しました' : '絵文字・ニックネームを入力してください'}
           </motion.p>
@@ -356,79 +241,59 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
   );
 
   return (
-    <div className="absolute inset-0 z-40 bg-amber-100 p-3 md:p-4 overflow-visible">
-      <div className="relative h-full w-full rounded-xl shadow-md border border-amber-300/80 overflow-visible">
-        <div className="relative z-[1] h-full min-h-0">
-          {/* QR: fixed under the top toolbar (never overlaps top buttons/badges) */}
-          {qrDataUrl ? (
-            <div
-              className="pointer-events-none fixed left-1/2 -translate-x-1/2 z-20"
-              style={{ top: 'calc(env(safe-area-inset-top) + 72px)' }}
-            >
-              <div className="bg-white rounded-2xl shadow-md px-2 py-2">
-                <div className="relative w-[112px] h-[112px]">
-                  <img
-                    src={qrDataUrl}
-                    alt="https://rakuda.coffee QR"
-                    className="w-[112px] h-[112px] rounded-xl"
-                  />
-                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                    <div className="w-6 h-6 rounded-full bg-white border border-amber-200 shadow-sm grid place-items-center">
-                      <span className="text-[14px] leading-none">🐫</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {/* 右上のオンライン/匿名/Google 等は SeatSelection から除去。表示名＋オンライン行は AppHeader（body ポータル） */}
+    <>
+    <div className="absolute inset-0 z-40 p-3 md:p-4 rk-seat-selection-outer">
+      <div className="relative h-full w-full rounded-xl shadow-md border border-rk-amber-300/80 overflow-hidden">
+        <div
+          className="absolute inset-0 pointer-events-none bg-gradient-to-b from-rk-amber-100 via-rk-amber-50 to-rk-orange-100 z-0"
+          aria-hidden
+        />
+        <RakudaFloatingBackdrop variant="hub" className="!absolute !inset-0 !z-[1]" />
+        <div className="relative z-[2] h-full min-h-0">
           <ModeEntryLayout
+            layoutVariant="hubScroll"
+            hubScrollContentTopClass="pt-12 sm:pt-14"
             title="らくだ珈琲"
             subtitle="永遠の素人。ゆるゆると遊んでいってね"
-            titleBadge={
-              <>
-                {/* "β版": right shoulder, subtle & diagonal */}
-                <span
-                  className="pointer-events-none absolute -top-2 right-[-18px] z-[30] px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50/90 text-amber-900 text-[10px] xs:text-[11px] font-black shadow-sm whitespace-nowrap rotate-[-12deg]"
-                  role="status"
-                >
-                  β版
-                </span>
-              </>
+            titleStrokeColor={rkCssColor('--rk-amber-900', 'rgb(120 53 15)')}
+            subtitleClassName="text-rk-amber-950/90"
+            backgroundClassName=""
+            rakudaBackdropVariant={undefined}
+            topLeft={settingsButton}
+            topRight={
+              <RakudaTopStatusBadge
+                userEmoji={userEmoji}
+                nickname={nickname}
+                isOnline={isOnline}
+                firebaseUser={firebaseUser}
+                isAuthReady={isAuthReady}
+                onGoogleLogin={onGoogleLogin}
+                onGoogleLoginPopup={onGoogleLoginPopup}
+                greenGateActive={greenGateActive}
+                shussekiRegular={shussekiRegular}
+              />
             }
-            titleStrokeColor="#78350f"
-            subtitleClassName="text-amber-950/90"
-            backgroundClassName="bg-gradient-to-b from-amber-100 via-amber-50 to-orange-100"
-            rakudaBackdropVariant="hub"
-            topLeft={
-              <div className="flex items-center gap-2">
-                {streamToggleButton}
-                {settingsButton}
-              </div>
-            }
-            titleTopClass={qrDataUrl ? 'top-[28%]' : 'top-[18%]'}
-            childrenTopClass={qrDataUrl ? 'top-[44%]' : 'top-[34%]'}
-            mainColumnTopClass={qrDataUrl ? 'top-[56%]' : 'top-[46%]'}
-            // Keep badges visible horizontally, but allow vertical scroll so lower items
-            // (e.g., "広告の消去（準備中）") remain reachable even with the fixed ad banner.
-            mainColumnScrollClassName="overflow-y-auto overflow-x-visible"
             children={
-              <div className="w-full space-y-2">
-                <AnimatePresence initial={false}>{loginPrompt}</AnimatePresence>
+              <>
+                <RakudaHubPresenceRow
+                  hubPresencePeers={hubPresencePeers}
+                  viewerCount={hubViewerCount}
+                  hubVisitorTotal={hubTotalDisplay}
+                />
                 {profileBlock}
-              </div>
+              </>
             }
             mainColumn={
               <nav
-                className="flex flex-col gap-3 w-full max-w-md mx-auto items-stretch pb-3 overflow-visible"
-                aria-label="メインメニュー（上から順：ことば探し、掲示板、３０募集一覧、３０の問題を作る、しゅっせき簿、しずかの間、広告の消去）"
+                className="grid grid-cols-2 gap-3 w-full max-w-md mx-auto pb-3 overflow-visible"
+                aria-label="メインメニュー（ことば探し、ひと言探し、掲示板ほか）"
               >
-                {/* 1. ことば探し */}
+                {/* ことば探し */}
                 <button
                   type="button"
-                  className={`${hubBtn} bg-[#f6c7c7] border-[#5a3d28] text-[#3b2a18] shadow-md`}
+                  className={`${hubBtnHalf} bg-[var(--rk-hub-rose-panel)] border-[var(--rk-hub-bark)] text-[var(--rk-hub-bark-deep)] shadow-md`}
                   onClick={() => {
+                    trackRakudaHubMenu('kotoba');
                     // Playing should always be possible even before profile setup.
                     if (!hasProfile) {
                       window.dispatchEvent(
@@ -441,15 +306,56 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                   }}
                 >
                   <KotobaLogo size={22} />
-                  <span className="font-medium">ことば探し</span>
+                  <span>ことば探し</span>
                 </button>
 
-                {/* 2. 掲示板（みんなであそぶ）→ /keijiban（SPA で連絡帳オーバーレイ） */}
+                {/* ひと言探し → SANJUU 募集掲示板 */}
+                <button
+                  type="button"
+                  aria-label="ひと言探し"
+                  className={`${hubBtnHalf} bg-gradient-to-r from-rk-sky-200 to-rk-cyan-200 border-rk-sky-700/45 text-rk-sky-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('hundred_recruit');
+                    vibrate(10);
+                    if (!hasProfile) {
+                      window.dispatchEvent(
+                        new CustomEvent('SHOW_TOAST', {
+                          detail: '見ることはできます。表示名をひと言探しに渡すには「絵文字・ニックネーム」を両方入れてください',
+                        })
+                      );
+                    }
+                    window.location.assign(
+                      sanjuuRecruitBoardUrlWithRakudaProfile({ emoji: userEmoji, nickname }),
+                    );
+                  }}
+                >
+                  {hundredRecruitHasNew ? (
+                    <span className="pointer-events-none absolute -top-1.5 left-2 z-[90] bg-rk-rose-200 text-[9px] px-1.5 py-0.5 rounded-lg border border-rk-rose-300 shadow-sm">
+                      新着
+                    </span>
+                  ) : hasActiveRecruitments ? (
+                    <span className="pointer-events-none absolute -top-1.5 left-2 z-[90] bg-rk-amber-100 text-[9px] px-1.5 py-0.5 rounded-lg border border-rk-amber-300 shadow-sm">
+                      募集
+                    </span>
+                  ) : null}
+                  <span className="text-lg leading-none shrink-0" aria-hidden>
+                    🔍
+                  </span>
+                  <span className="text-[15px] xs:text-base leading-tight text-rk-sky-950 font-black">ひと言探し</span>
+                  {hundredRecruitHasNew ? (
+                    <span className="text-[10px] text-rk-red-600">新着あり</span>
+                  ) : hasActiveRecruitments ? (
+                    <span className="text-[10px] text-rk-sky-800/90">募集あり</span>
+                  ) : null}
+                </button>
+
+                {/* 掲示板（1行・従来サイズ） */}
                 <button
                   type="button"
                   aria-label="掲示板"
-                  className={`${hubBtn} bg-gradient-to-r from-violet-200 to-indigo-200 border-indigo-700/40 text-indigo-950 shadow-md`}
+                  className={`${hubBtn} col-span-2 bg-gradient-to-r from-rk-violet-200 to-rk-indigo-200 border-rk-indigo-700/40 text-rk-indigo-950 shadow-md`}
                   onClick={() => {
+                    trackRakudaHubMenu('keijiban');
                     vibrate(10);
                     if (!hasProfile) {
                       window.dispatchEvent(
@@ -458,118 +364,235 @@ const SeatSelection: React.FC<SeatSelectionProps> = ({
                         })
                       );
                     }
-                    window.location.assign(rakudaCommunityBulletinUrl());
+                    onOpenKeijiban();
                   }}
                 >
                   <span className="text-lg leading-none">📋</span>
-                  <span className="font-medium text-center leading-tight flex flex-col gap-0.5">
+                  <span className="text-center leading-tight flex flex-col gap-0.5">
                     <span>掲示板</span>
                     {renrakuchoHasUnread ? (
-                      <span className="text-[10px] font-black text-indigo-800/90">未読あり</span>
+                      <span className="text-[10px] text-rk-indigo-800/90">未読あり</span>
                     ) : null}
                   </span>
                 </button>
 
-                {/* 3. 三十 募集一覧 → /sanjuu/recruit-board */}
+                {/* ちょっと誰かに聞いて欲しい人のためのノート */}
                 <button
                   type="button"
-                  aria-label="３０募集一覧"
-                  className={`${hubBtn} bg-gradient-to-r from-sky-200 to-cyan-200 border-sky-700/45 text-sky-950 shadow-md`}
+                  aria-label={OUEN_NOTE_TITLE}
+                  className={`${hubBtn} col-span-2 relative bg-gradient-to-r from-rk-teal-100 via-rk-teal-50 to-rk-sky-50 border-rk-teal-600/35 text-rk-teal-950 shadow-md`}
                   onClick={() => {
+                    trackRakudaHubMenu('note');
                     vibrate(10);
-                    if (!hasProfile) {
-                      window.dispatchEvent(
-                        new CustomEvent('SHOW_TOAST', {
-                          detail: '見ることはできます。表示名を三十に渡すには「絵文字・ニックネーム」を両方入れてください',
-                        })
-                      );
-                    }
-                    const u = new URL('/sanjuu/recruit-board', window.location.origin);
-                    appendRakudaProfileQuery(u, { emoji: userEmoji, nickname });
-                    window.location.assign(u.toString());
-                  }}
-                >
-                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
-                    <span className="text-[15px] xs:text-base font-black leading-tight text-sky-950">３０募集一覧</span>
-                    {sanjuuRecruitOpen ? (
-                      <span className="text-[10px] font-black text-red-600">募集あり</span>
-                    ) : null}
-                  </span>
-                </button>
-
-                {/* 4. ３０の問題を作る（三十トップ `VITE_SANJUU_WEB_ORIGIN` + 任意で rkEmoji/rkNick） */}
-                <button
-                  type="button"
-                  aria-label="３０の問題を作る"
-                  className={`${hubBtn} bg-gradient-to-r from-amber-200 to-orange-200 border-amber-700/45 text-amber-950 shadow-md`}
-                  onClick={() => {
-                    vibrate(10);
-                    const emoji = String(userEmoji ?? '').trim();
-                    const nick = String(nickname ?? '').trim();
-                    if (!emoji && !nick) {
-                      window.dispatchEvent(
-                        new CustomEvent('SHOW_TOAST', {
-                          detail: '絵文字・ニックネームを入力してから進んでね',
-                        })
-                      );
-                      setShowRegisteredMessage(true);
-                      setTimeout(() => setShowRegisteredMessage(false), 2500);
+                    if (!OUEN_NOTE_HUB_LIVE) {
+                      setShowOuenNotePrepPopup(true);
                       return;
                     }
-                    window.location.assign(
-                      sanjuuTopUrlWithRakudaProfile({ emoji: userEmoji, nickname })
-                    );
+                    if (OUEN_NOTE_HUB_TESTING) {
+                      setShowOuenNotePrepPopup(true);
+                      return;
+                    }
+                    void onOpenOuenNote();
                   }}
                 >
-                  <span className="flex flex-col items-center justify-center gap-0.5 min-w-[2.75rem] text-center">
-                    <span className="text-[15px] xs:text-base font-black leading-tight text-amber-950">３０の問題を作る</span>
+                  {!OUEN_NOTE_HUB_LIVE ? (
+                    <span className="absolute top-1.5 right-2 z-10 px-2 py-0.5 rounded-md border-2 border-rk-red-600 bg-rk-red-600 text-rk-white text-[10px] font-black shadow-sm pointer-events-none">
+                      準備中
+                    </span>
+                  ) : OUEN_NOTE_HUB_TESTING ? (
+                    <span className="absolute top-1.5 right-2 z-10 px-2 py-0.5 rounded-md border-2 border-rk-amber-600 bg-rk-amber-500 text-rk-white text-[10px] font-black shadow-sm pointer-events-none">
+                      テスト中
+                    </span>
+                  ) : null}
+                  <span className="text-lg leading-none shrink-0" aria-hidden>
+                    📝
+                  </span>
+                  <span className="text-center leading-tight flex flex-col gap-0.5">
+                    <span className="text-[13px] xs:text-sm font-black">{OUEN_NOTE_TITLE}</span>
+                    <span className="text-[10px] font-bold text-rk-teal-900/75">しゅっせき{OUEN_NOTE_MIN_STAMPS}日以上・らくだの空気が分かる方へ</span>
+                    {ouenNoteHasUnread ? (
+                      <span className="text-[10px] text-rk-teal-900/90">未読あり</span>
+                    ) : null}
                   </span>
                 </button>
 
-                {/* 5. みんなの願い */}
-                {/* 6. しゅっせき簿 */}
+                {/* 連続小説 */}
                 <button
                   type="button"
-                  className={`${hubBtn} bg-gradient-to-r from-emerald-300 to-green-300 border-emerald-600/55 text-emerald-950 shadow-md`}
-                  onClick={() => requireProfile(onOpenStampCard)}
+                  aria-label="連続小説"
+                  className={`${hubBtn} col-span-2 bg-gradient-to-r from-rk-amber-100 via-rk-orange-50 to-rk-amber-200 border-rk-amber-700/35 text-rk-amber-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('relay_story');
+                    vibrate(10);
+                    onOpenRelayStory();
+                  }}
                 >
-                  <span className="text-lg leading-none">💮</span>
-                  <span className="font-medium">しゅっせき簿</span>
+                  <span className="text-lg leading-none shrink-0" aria-hidden>
+                    📖
+                  </span>
+                  <span className="text-center leading-tight flex flex-col gap-0.5">
+                    <span className="font-black">連続小説</span>
+                    <span className="text-[10px] font-bold text-rk-amber-900/80">起・承・転・結</span>
+                  </span>
                 </button>
 
-                {/* 7. しずかの間 */}
+                {/* リバーシ */}
                 <button
                   type="button"
-                  className={`${hubBtn} bg-gradient-to-r from-slate-900 to-blue-950 border-sky-500/50 text-sky-50 shadow-md`}
-                  onClick={() => requireProfile(onSelectQuietRoom)}
+                  aria-label="リバーシ"
+                  className={`${hubBtnHalf} bg-gradient-to-br from-rk-success-700 via-rk-success-800 to-rk-success-950 border-rk-success-900/45 text-rk-slate-50 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('reversi');
+                    requireProfile(onOpenOthello);
+                  }}
+                >
+                  <span className="inline-flex gap-0.5 shrink-0" aria-hidden>
+                    <span className="size-3 rounded-full bg-rk-slate-900 border border-rk-slate-700" />
+                    <span className="size-3 rounded-full bg-rk-white border border-rk-slate-300" />
+                  </span>
+                  <span>リバーシ</span>
+                  {reversiRecruitHostWaiting ? (
+                    <span
+                      className={`pointer-events-none absolute -top-2 left-1/2 -translate-x-1/2 z-[90] ${REVERSI_RECRUIT_HOST_BADGE_CLASS.replace('font-black', 'font-normal')}`}
+                    >
+                      募集中
+                    </span>
+                  ) : reversiRecruitHasOpen ? (
+                    <span
+                      className={`pointer-events-none absolute -top-2 left-1/2 -translate-x-1/2 z-[90] ${REVERSI_RECRUIT_BADGE_CLASS.replace('font-black', 'font-normal')}`}
+                    >
+                      募集あり
+                    </span>
+                  ) : null}
+                </button>
+
+                {/* 五目並べ */}
+                <button
+                  type="button"
+                  aria-label="五目並べ"
+                  className={`${hubBtnHalf} bg-gradient-to-br from-rk-amber-200 via-rk-amber-100 to-rk-amber-300 border-rk-amber-800/35 text-rk-amber-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('gomoku');
+                    requireProfile(onOpenGomoku);
+                  }}
+                >
+                  {gomokuRecruitHostWaiting ? (
+                    <span
+                      className={`pointer-events-none absolute -top-2 right-2 z-[90] ${GOMOKU_RECRUIT_HOST_BADGE_CLASS.replace('font-black', 'font-normal')}`}
+                    >
+                      募集中
+                    </span>
+                  ) : gomokuRecruitHasOpen ? (
+                    <span
+                      className={`pointer-events-none absolute -top-2 right-2 z-[90] ${GOMOKU_RECRUIT_BADGE_CLASS.replace('font-black', 'font-normal')}`}
+                    >
+                      募集あり
+                    </span>
+                  ) : null}
+                  <span className="inline-flex gap-0.5 shrink-0" aria-hidden>
+                    <span className="size-3 rounded-full bg-rk-slate-900 border border-rk-slate-700" />
+                    <span className="size-2.5 rounded-full bg-rk-white border border-rk-slate-300 mt-0.5" />
+                  </span>
+                  <span className="text-center leading-tight flex flex-col gap-0.5">
+                    <span>五目並べ</span>
+                    <span className="text-[10px] font-bold text-rk-amber-900/80">13 / 15</span>
+                  </span>
+                </button>
+
+                {/* 9×9数字パズル */}
+                <button
+                  type="button"
+                  aria-label="9×9数字パズル"
+                  className={`${hubBtnHalf} bg-gradient-to-br from-rk-indigo-200 via-rk-sky-100 to-rk-indigo-200 border-rk-indigo-700/40 text-rk-indigo-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('sudoku');
+                    requireProfile(onOpenSudoku);
+                  }}
+                >
+                  <Grid3x3 className="w-5 h-5 shrink-0 opacity-90" aria-hidden />
+                  <span className="text-center leading-tight flex flex-col gap-0.5">
+                    <span>9×9数字</span>
+                    <span className="text-[10px] font-bold text-rk-indigo-800/85">1〜9を並べる</span>
+                  </span>
+                </button>
+
+                {/* スライドパズル */}
+                <button
+                  type="button"
+                  className={`${hubBtnHalf} bg-gradient-to-br from-rk-violet-200 via-rk-indigo-200 to-rk-violet-300 border-rk-violet-700/45 text-rk-violet-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('slide_puzzle');
+                    requireProfile(onOpenSlidePuzzle);
+                  }}
+                >
+                  <LayoutGrid className="w-5 h-5 shrink-0 opacity-90" />
+                  <span>スライドパズル</span>
+                </button>
+
+                {/* しずかの間（らくだNote） */}
+                <button
+                  type="button"
+                  aria-label="しずかの間（らくだNote）"
+                  className={`${hubBtnHalf} bg-gradient-to-r from-rk-slate-900 via-rest-bg/20 to-rk-blue-950 border-rest-accent/50 text-rk-sky-50 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('quiet_room');
+                    requireProfile(onSelectQuietRoom);
+                  }}
                 >
                   <Moon className="w-5 h-5 shrink-0 opacity-90" />
-                  <span className="font-medium">しずかの間</span>
+                  <span className="text-center leading-tight text-[13px] xs:text-sm font-black">
+                    しずかの間（らくだNote）
+                  </span>
                 </button>
 
-                {/* 8. 広告の消去 */}
+                {/* しゅっせき簿（1行・従来サイズ） */}
                 <button
                   type="button"
-                  disabled
-                  className={`${hubBtn} opacity-50 border-slate-200 bg-slate-100 text-slate-500 cursor-not-allowed`}
+                  className={`${hubBtn} col-span-2 bg-gradient-to-r from-rk-success-300 to-rk-success-300 border-rk-success-600/55 text-rk-success-950 shadow-md`}
+                  onClick={() => {
+                    trackRakudaHubMenu('stamp_card');
+                    requireProfile(onOpenStampCard);
+                  }}
                 >
-                  <Heart className="w-5 h-5 shrink-0" />
-                  <span className="font-medium">広告の消去（準備中）</span>
+                  <span className="text-lg leading-none">💮</span>
+                  <span>しゅっせき簿</span>
                 </button>
+
+                {/* 遊び方ガイド（静的ページ・別タブ） */}
+                <a
+                  href="/guide/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => trackRakudaHubMenu('guide')}
+                  className={`${hubBtn} col-span-2 bg-gradient-to-r from-rk-sky-50 to-rk-cyan-50 border-rk-sky-400/70 text-rk-sky-950 shadow-sm`}
+                >
+                  <BookOpen className="w-5 h-5 shrink-0 opacity-90" aria-hidden />
+                  <span>遊び方ガイド</span>
+                </a>
               </nav>
             }
             footer={
-              <div className="flex flex-col items-center gap-1 text-[10px] text-amber-950/80 font-medium">
-                <span>
-                  &copy; 2026 らくだ珈琲 · v{import.meta.env.VITE_APP_VERSION}
-                </span>
+              <div className="flex flex-col items-center gap-1 text-[10px] text-rk-amber-950/80 font-medium">
+                <span>&copy; 2026 らくだ珈琲</span>
               </div>
             }
           />
         </div>
       </div>
-
     </div>
+    <OuenNotePrepPopup
+      open={showOuenNotePrepPopup}
+      onDismiss={() => setShowOuenNotePrepPopup(false)}
+      onProceed={
+        OUEN_NOTE_HUB_LIVE && OUEN_NOTE_HUB_TESTING
+          ? () => {
+              setShowOuenNotePrepPopup(false);
+              void onOpenOuenNote();
+            }
+          : undefined
+      }
+    />
+    </>
   );
 };
 

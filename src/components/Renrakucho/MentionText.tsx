@@ -23,7 +23,7 @@ function LineWithMentions({ line }: { line: string }) {
     <>
       {parts.map((part, i) =>
         part.startsWith('@') ? (
-          <span key={i} className="text-sky-600 font-semibold">
+          <span key={i} className="text-rk-sky-600 font-semibold">
             {part}
           </span>
         ) : (

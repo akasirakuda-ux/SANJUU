@@ -34,6 +34,11 @@ export interface LogEntry {
   details?: {
     category?: string;
     difficulty?: number;
+    boardCols?: number;
+    boardRows?: number;
+    boardLabel?: string;
+    targetWord?: string;
+    roomId?: string;
     foundCount?: number;
     totalCount?: number;
     duration?: string;
@@ -88,6 +93,8 @@ export interface UserAccount {
   userEmoji?: string;
   addOns: AddOnModule[];
   completedDates?: string[]; // YYYY-MM-DD
+  /** 旧：日別プレイ回数（表示は廃止。有無の判定にだけ使う場合あり） */
+  dailyClearCounts?: Record<string, number>;
   specialDates?: string[]; // YYYY-MM-DD (Dates with 3+ clears)
   lastSyncAt?: string;
   lastLoginDate?: string; // YYYY-MM-DD
@@ -103,7 +110,13 @@ export type ScreenType =
   | 'game'
   | 'seat-selection'
   | 'quiet-room'
-  | 'worlds-wish';
+  | 'slide-puzzle'
+  | 'othello'
+  | 'gomoku'
+  | 'relay-story'
+  | 'tile-match'
+  | 'sudoku'
+  | 'ouen-note';
 
 export interface Point {
   x: number;
@@ -117,6 +130,8 @@ export interface FoundWord {
   color: string;
   isHint?: boolean;
   userName?: string;
+  /** みんなであそぶ: 回答時の絵文字（Firestore 短縮形 `m`） */
+  userEmoji?: string;
   /** みんなであそぶ協力などで回答者 UID を紐づける */
   playerId?: string;
 }
@@ -139,6 +154,10 @@ export interface Selection {
 export interface GameState {
   grid: string[][];
   difficulty: number;
+  /** 長方形盤の列数（未設定時は difficulty と同じ） */
+  boardCols?: number;
+  /** 長方形盤の行数（未設定時は difficulty と同じ） */
+  boardRows?: number;
   category: WordCategory | null;
   placedWords: PlacedWord[];
   foundWords: FoundWord[];
@@ -149,4 +168,6 @@ export interface GameState {
   targetWord?: string;
   /** 検索モードの制限時間（秒）。みんなであそぶ協力では `useGame` が hundred_rooms の値を正規化（旧 0 は既定秒へ） */
   searchTimeLimitSec?: number;
+  /** みんなであそぶ（ひと言探し）: ヒントボタンを許可するか（未設定は true） */
+  hintsEnabled?: boolean;
 }

@@ -25,6 +25,7 @@
       ]
     },
     "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "noEmit": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts", "scripts/**/*.ts", "scripts/**/*.mjs"],

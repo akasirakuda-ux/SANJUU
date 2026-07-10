@@ -1,11 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { hundredDisplayDeadlineMs } from '../../../lib/firestoreTime';
 import { btnGhost, btnPrimary } from '../../../ui/policy';
 import { db } from '../../../firebase';
+import { formatBoardDimensions } from '../../../lib/boardDimensions';
+import {
+  resolveHundredRecruitBoardFields,
+  resolveHundredRecruitTargetWord,
+} from '../../../lib/hundredRecruitDisplay';
+import { isRoboPickupLoungeRecruit } from '../../../lib/roboPickupLoungeConfig';
+import { isHundredBetweenRounds } from '../../../lib/firestoreTime';
+import { HUNDRED_MAX_PLAYERS } from '../../../lib/hundredRoomCapacity';
 import type { HundredPublicRecruit, HundredRoomListMeta } from '../types';
-
-const pad2 = (n: number) => String(n).padStart(2, '0');
 
 const HundredDetailPanel: React.FC<{
   selectedHundred: HundredPublicRecruit;
@@ -37,13 +42,14 @@ const HundredDetailPanel: React.FC<{
 
   useEffect(() => {
     const id = selectedHundred.id;
-    if (!id) return;
+    if (!id || id.startsWith('local-')) return;
     const ref = doc(db, 'hundred_public', id);
     const unsub = onSnapshot(
       ref,
       (snap) => {
         if (!snap.exists()) {
-          // ゲスト（ホスト以外）：募集がとじられた → 専用案内へ
+          // お題間は hundred_public を消すだけ（待機継続）。終了・取消のときだけ閉じる。
+          if (isHundredBetweenRounds(roomMeta)) return;
           const hostUid = selectedHundred.hostUid;
           if (hostUid != null && currentUid !== hostUid) {
             onGuestRecruitmentClosed();
@@ -53,26 +59,22 @@ const HundredDetailPanel: React.FC<{
       () => {}
     );
     return () => unsub();
-  }, [selectedHundred.id, selectedHundred.hostUid, currentUid, onGuestRecruitmentClosed]);
+  }, [selectedHundred.id, selectedHundred.hostUid, currentUid, roomMeta, onGuestRecruitmentClosed]);
 
   const playerLabel = useMemo(() => {
     const n = roomMeta?.playerCount;
-    return typeof n === 'number' ? `${n}/100` : '—/100';
+    return typeof n === 'number' ? `${n}/${HUNDRED_MAX_PLAYERS}` : `—/${HUNDRED_MAX_PLAYERS}`;
   }, [roomMeta?.playerCount]);
 
-  const countdownLabel = useMemo(() => {
-    const deadlineMs = hundredDisplayDeadlineMs({
-      roomRecruitDeadlineAt: roomMeta?.recruitDeadlineAt,
-      itemRecruitDeadlineAt: selectedHundred.recruitDeadlineAt,
-      itemCreatedAt: selectedHundred.createdAt,
-    });
-    if (deadlineMs == null) return '—';
-    const left = Math.max(0, deadlineMs - nowMs);
-    if (left <= 0) return '0:00';
-    const m = Math.floor(left / 60000);
-    const s = Math.floor((left % 60000) / 1000);
-    return `${m}:${pad2(s)}`;
-  }, [roomMeta?.recruitDeadlineAt, selectedHundred.recruitDeadlineAt, selectedHundred.createdAt, nowMs]);
+  const displayTargetWord = useMemo(
+    () => resolveHundredRecruitTargetWord(selectedHundred, roomMeta),
+    [selectedHundred, roomMeta],
+  );
+  const displayBoard = useMemo(
+    () => resolveHundredRecruitBoardFields(selectedHundred, roomMeta),
+    [selectedHundred, roomMeta],
+  );
+  const isRoboLounge = isRoboPickupLoungeRecruit(selectedHundred);
 
   return (
     <div className="space-y-4 max-w-lg mx-auto">
@@ -80,14 +82,23 @@ const HundredDetailPanel: React.FC<{
         もどる
       </button>
 
-      <div className="bg-white rounded-xl p-4 shadow-md border border-slate-200 space-y-4">
-        <div className="text-xs font-black text-slate-400 uppercase tracking-widest">みんなであそぶ</div>
-        <div className="text-lg font-bold">探すことば：{selectedHundred.targetWord || ''}</div>
-        <div className="text-sm text-slate-600">
-          盤面：{selectedHundred.boardSize || ''}×{selectedHundred.boardSize || ''}
+      <div className="bg-rk-white rounded-xl p-4 shadow-md border border-rk-slate-200 space-y-4">
+        <div className="text-xs font-black text-rk-slate-400 uppercase tracking-widest">みんなであそぶ</div>
+        <div className="text-lg font-bold">探すことば：{displayTargetWord}</div>
+        <div className="text-sm text-rk-slate-600">
+          盤面：{formatBoardDimensions(displayBoard)}
         </div>
-        <div className="text-sm text-slate-600">参加人数：{playerLabel}</div>
-        <div className="text-sm text-slate-400">募集の残り：{countdownLabel}</div>
+        {isRoboLounge ? (
+          <div className="text-xs text-rk-slate-500">いまのお題（みんなで全部見つけると次へ）</div>
+        ) : (
+          <div className="text-sm text-rk-slate-600">いつでも参加できます（ゲーム中もOK）</div>
+        )}
+        {selectedHundred.hundredMode !== 'tile_match' ? (
+          <div className="text-sm text-rk-slate-600">
+            ヒント：{selectedHundred.hintsEnabled === false ? 'なし' : 'あり'}
+          </div>
+        ) : null}
+        <div className="text-sm text-rk-slate-600">参加人数：{playerLabel}</div>
 
         <button type="button" className={btnPrimary} onClick={onGoWait}>
           募集に参加する
@@ -100,14 +111,14 @@ const HundredDetailPanel: React.FC<{
         ) : null}
 
         {isHost ? (
-          <div className="pt-2 border-t border-slate-100">
-            <p className="text-[11px] text-slate-400 mb-2 leading-relaxed">
+          <div className="pt-2 border-t border-rk-slate-100">
+            <p className="text-[11px] text-rk-slate-400 mb-2 leading-relaxed">
               ホストだけが使えます。とじると一覧から消え、参加中・参加予定のみなさんにも影響する可能性があります。
             </p>
             <button
               type="button"
               disabled={closing}
-              className="w-full py-3 rounded-xl border border-slate-300 bg-slate-100 text-slate-700 text-sm font-medium shadow-sm hover:bg-slate-200 disabled:opacity-50 transition-colors"
+              className="w-full py-3 rounded-xl border border-rk-slate-300 bg-rk-slate-100 text-rk-slate-700 text-sm font-medium shadow-sm hover:bg-rk-slate-200 disabled:opacity-50 transition-colors"
               onClick={() => {
                 if (
                   !window.confirm(

@@ -6,6 +6,8 @@ interface NetworkStatusHandlerProps {
    * (optional) Used by legacy blackout UI. Kept optional so the handler never blocks the app.
    */
   onReset?: () => void;
+  /** しずかの間・みんなの願いなど — 遅延警告の浮遊 UI（`z-[9999]`）を出さずポーリングも止める */
+  suppressFloatingWarnings?: boolean;
 }
 
 type MessageType = 'fuwari' | 'rakuda';
@@ -17,7 +19,9 @@ interface WarningMessage {
   type: MessageType;
 }
 
-export const NetworkStatusHandler: React.FC<NetworkStatusHandlerProps> = ({ onReset }) => {
+export const NetworkStatusHandler: React.FC<NetworkStatusHandlerProps> = ({
+  suppressFloatingWarnings = false,
+}) => {
   const [latency, setLatency] = useState(0);
   const [lastWarningTime, setLastWarningTime] = useState(0);
   const [messages, setMessages] = useState<WarningMessage[]>([]);
@@ -72,41 +76,49 @@ export const NetworkStatusHandler: React.FC<NetworkStatusHandlerProps> = ({ onRe
   }, [lastWarningTime, addMessage]);
 
   useEffect(() => {
+    if (suppressFloatingWarnings) {
+      setMessages([]);
+      return;
+    }
     const interval = setInterval(checkNetwork, 10000); // 10秒ごとにチェック
     return () => clearInterval(interval);
-  }, [checkNetwork]);
+  }, [checkNetwork, suppressFloatingWarnings]);
 
   return (
     <>
-      {/* 警告メッセージのオーバーレイ */}
-      <div className="fixed inset-0 pointer-events-none z-[9999] overflow-hidden">
-        <AnimatePresence>
-          {messages.map((msg) => (
-            <motion.div
-              key={msg.id}
-              initial={{ y: '100vh', opacity: 0, x: '10%' }}
-              animate={{ y: '-20vh', opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 7, ease: "linear" }}
-              className="absolute bottom-0 left-4"
-            >
-              <div className={`
+      {!suppressFloatingWarnings ? (
+        <div className="fixed inset-0 pointer-events-none z-[9999] overflow-hidden">
+          <AnimatePresence>
+            {messages.map((msg) => (
+              <motion.div
+                key={msg.id}
+                initial={{ y: '100vh', opacity: 0, x: '10%' }}
+                animate={{ y: '-20vh', opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 7, ease: "linear" }}
+                className="absolute bottom-0 left-4"
+              >
+                <div
+                  className={`
                 px-6 py-3 rounded-2xl shadow-lg border-2 text-sm md:text-base font-medium
-                ${msg.type === 'fuwari' ? 'bg-white border-blue-200 text-blue-600' : 
-                  'bg-amber-50 border-amber-200 text-amber-700'}
-              `}>
-                <span className="font-bold mr-2">{msg.sender}:</span>
-                {msg.text}
-                {/* 吹き出しのしっぽ */}
-                <div className={`absolute -bottom-2 left-6 w-4 h-4 rotate-45 border-r-2 border-b-2 
-                  ${msg.type === 'fuwari' ? 'bg-white border-blue-200' : 
-                    'bg-amber-50 border-amber-200'}
-                `} />
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
+                ${msg.type === 'fuwari' ? 'bg-rk-white border-rk-blue-200 text-rk-blue-600' : 
+                  'bg-rk-amber-50 border-rk-amber-200 text-rk-amber-700'}
+              `}
+                >
+                  <span className="font-bold mr-2">{msg.sender}:</span>
+                  {msg.text}
+                  <div
+                    className={`absolute -bottom-2 left-6 w-4 h-4 rotate-45 border-r-2 border-b-2 
+                  ${msg.type === 'fuwari' ? 'bg-rk-white border-rk-blue-200' : 
+                    'bg-rk-amber-50 border-rk-amber-200'}
+                `}
+                  />
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      ) : null}
     </>
   );
 };

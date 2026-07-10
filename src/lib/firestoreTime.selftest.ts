@@ -5,13 +5,20 @@ import assert from 'node:assert/strict';
 import {
   firestoreLikeToMillis,
   formatFirestoreTimeJa,
+  HUNDRED_IN_PLAY_BOARD_VISIBLE_MS,
+  HUNDRED_OPEN_RECRUIT_IDLE_HIDE_MS,
   HUNDRED_PUBLIC_LIST_HIDE_GRACE_MS,
   HUNDRED_RECRUIT_WINDOW_MS,
   hundredDisplayDeadlineMs,
   normalizeHundredGameTimeLimitSec,
   RENRAKU_RECRUIT_TTL_MS,
   shouldHideFromPublicListAfterRecruitDeadlineGrace,
+  shouldHideFromSanjuuRecruitBoard,
   shouldHideHundredPublicFromListItem,
+  isHundredRoomInPlay,
+  isHundredRoomInPlayOrStarting,
+  isHundredBetweenRounds,
+  isHundredOpenRecruitSessionEnded,
 } from './firestoreTime';
 
 const T0 = 1_700_000_000_000;
@@ -97,5 +104,239 @@ assert.equal(normalizeHundredGameTimeLimitSec(undefined), 0);
 assert.equal(normalizeHundredGameTimeLimitSec(900), 900);
 assert.equal(formatFirestoreTimeJa(null), '—');
 assert.ok(formatFirestoreTimeJa({ toMillis: () => T0 }).includes('20')); // 実日付に依存しないよう最低限
+
+const item = { createdAt: { toMillis: () => created } };
+const afterRecruitDeadline = created + HUNDRED_RECRUIT_WINDOW_MS + 60_000;
+const afterBoardGrace =
+  created + HUNDRED_RECRUIT_WINDOW_MS + HUNDRED_PUBLIC_LIST_HIDE_GRACE_MS + 60_000;
+const afterInPlayWindow =
+  created +
+  HUNDRED_RECRUIT_WINDOW_MS +
+  HUNDRED_PUBLIC_LIST_HIDE_GRACE_MS +
+  HUNDRED_IN_PLAY_BOARD_VISIBLE_MS +
+  60_000;
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'playing' }, afterRecruitDeadline),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'playing', playerCount: 20 }, afterRecruitDeadline),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'playing' }, afterBoardGrace),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'playing' }, afterInPlayWindow),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'finished' }, afterBoardGrace),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'recruiting' }, afterRecruitDeadline),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, { status: 'recruiting' }, afterBoardGrace),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(
+    item,
+    { status: 'recruiting', playerCount: 20 },
+    afterRecruitDeadline,
+  ),
+  true,
+);
+assert.equal(isHundredRoomInPlay('playing'), true);
+assert.equal(isHundredRoomInPlay('recruiting'), false);
+assert.equal(
+  isHundredRoomInPlayOrStarting({
+    status: 'recruiting',
+    problemsGenerating: true,
+  }),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(
+    item,
+    { status: 'recruiting', problemsGenerating: true },
+    afterRecruitDeadline,
+  ),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard({ ...item, roomId: 'room-1' }, undefined, afterRecruitDeadline),
+  true,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(
+    item,
+    { status: 'recruiting', startedAt: { toMillis: () => created } },
+    afterRecruitDeadline,
+  ),
+  true,
+);
+
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, undefined, afterRecruitDeadline, { roomDocMissing: true }),
+  true,
+);
+
+const roboItem = { roboPickupLounge: true, roomId: 'robo-pickup-lounge', createdAt: { toMillis: () => created } };
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(roboItem, { status: 'playing', foundWords: [], words: [] }, nowHide),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(
+    roboItem,
+    { status: 'playing', problemsGenerating: true, foundWords: [], words: [{ occurrences: [] }] },
+    nowHide,
+  ),
+  false,
+);
+
+const clearedPlaying = {
+  status: 'playing',
+  foundWords: [{ word: 'a', start: { x: 0, y: 0 }, end: { x: 0, y: 0 }, playerId: 'u1' }],
+  words: [{ occurrences: [{ start: { x: 0, y: 0 }, end: { x: 0, y: 0 } }] }],
+};
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(item, clearedPlaying, nowHide),
+  true,
+);
+const openDeadline = { toMillis: () => Date.parse('2099-01-01T00:00:00+09:00') };
+const openItem = { createdAt: { toMillis: () => created }, recruitDeadlineAt: openDeadline };
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(openItem, clearedPlaying, nowHide),
+  true,
+);
+
+const betweenRounds = {
+  status: 'recruiting',
+  endReason: 'cleared',
+  endedAt: { toMillis: () => nowHide - 5 * 60_000 },
+};
+assert.equal(isHundredBetweenRounds(betweenRounds), true);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(openItem, betweenRounds, nowHide),
+  true,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      ...betweenRounds,
+      endedAt: { toMillis: () => nowHide - HUNDRED_OPEN_RECRUIT_IDLE_HIDE_MS - 1 },
+    },
+    nowHide,
+  ),
+  true,
+);
+assert.equal(
+  isHundredRoomInPlayOrStarting({
+    status: 'recruiting',
+    endReason: 'cleared',
+    startedAt: { toMillis: () => nowHide - 60_000 },
+  }),
+  false,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      status: 'recruiting',
+      startedAt: { toMillis: () => nowHide - HUNDRED_OPEN_RECRUIT_IDLE_HIDE_MS - 1 },
+    },
+    nowHide,
+  ),
+  true,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    { status: 'playing', startedAt: { toMillis: () => nowHide - 60_000 } },
+    nowHide,
+  ),
+  false,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      status: 'playing',
+      startedAt: { toMillis: () => nowHide - 60_000 },
+      words: [],
+    },
+    nowHide,
+  ),
+  true,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      status: 'playing',
+      startedAt: { toMillis: () => nowHide - 120_000 },
+      playerCount: 0,
+    },
+    nowHide,
+  ),
+  true,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      status: 'playing',
+      startedAt: { toMillis: () => nowHide - 120_000 },
+      playerCount: 0,
+      foundWords: [{ word: 'a', start: { x: 0, y: 0 }, end: { x: 0, y: 0 } }],
+      words: [
+        {
+          occurrences: [
+            { start: { x: 0, y: 0 }, end: { x: 1, y: 0 } },
+            { start: { x: 2, y: 0 }, end: { x: 3, y: 0 } },
+          ],
+        },
+      ],
+    },
+    nowHide,
+  ),
+  false,
+);
+assert.equal(
+  isHundredOpenRecruitSessionEnded(
+    openItem,
+    {
+      status: 'playing',
+      startedAt: { toMillis: () => nowHide - 120_000 },
+      playerCount: 0,
+      problemsReady: true,
+      words: [],
+    },
+    nowHide,
+  ),
+  false,
+);
+assert.equal(
+  shouldHideFromSanjuuRecruitBoard(
+    openItem,
+    {
+      status: 'playing',
+      startedAt: { toMillis: () => nowHide - 120_000 },
+      playerCount: 0,
+      problemsReady: true,
+      gridRowsPresent: true,
+      words: [],
+    },
+    nowHide,
+  ),
+  false,
+);
 
 console.log('firestoreTime.selftest: OK');

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { collection, limit, onSnapshot, orderBy, query, Timestamp, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import { isRenrakuEntryVisible } from '../lib/renrakuVisibility';
+import { firestoreLikeToMillis, isRenrakuEntryVisible } from '../lib/rakudaHubShell';
 
 export const RK_RENRAKU_LAST_SEEN_MS_KEY = 'rk_renraku_last_seen_ms';
 
@@ -91,14 +91,8 @@ export function useRenrakuchoUnreadBadge(isRenrakuAdminUser: boolean, isAuthRead
       orderBy('createdAt', 'desc'),
       limit(LIMIT_PUB_REC)
     );
-    const qPrv = isRenrakuAdminUser
-      ? query(
-          collection(db, 'renraku_private'),
-          where('createdAt', '>', ts),
-          orderBy('createdAt', 'desc'),
-          limit(LIMIT_PRV_ADMIN)
-        )
-      : null;
+    // 管理者の伝言: 複合インデックス不要のため全件近傍を取得しクライアントで lastSeen 比較
+    const qPrv = isRenrakuAdminUser ? query(collection(db, 'renraku_private'), limit(LIMIT_PRV_ADMIN)) : null;
 
     const unsubPub = onSnapshot(
       qPub,
@@ -133,7 +127,12 @@ export function useRenrakuchoUnreadBadge(isRenrakuAdminUser: boolean, isAuthRead
         ? onSnapshot(
             qPrv,
             (snap) => {
-              const vis = snap.docs.filter((d) => isRenrakuEntryVisible(d.data()));
+              const vis = snap.docs.filter((d) => {
+                const data = d.data();
+                if (!isRenrakuEntryVisible(data)) return false;
+                const ms = firestoreLikeToMillis(data.createdAt);
+                return ms != null && ms > lastSeenMs;
+              });
               countsRef.current.prv = vis.length;
               recompute();
             },

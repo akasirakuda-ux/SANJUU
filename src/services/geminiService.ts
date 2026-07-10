@@ -10,7 +10,7 @@ export class GeminiService {
   async getWordExplanation(word: string, language: 'ja' | 'en'): Promise<string> {
     try {
       const prompt = language === 'ja' 
-        ? `「${word}」という言葉について、小学生でもわかるような短い豆知識や説明を1行（50文字以内）で教えてください。
+        ? `「${word}」という言葉について、小学生でもわかるように、短いおもしろ雑学か、ひとこと説明を1行（50文字以内）で教えてください。
            【重要】公序良俗に反する内容、性的な描写、暴力的な表現は一切含めないでください。子供向けの安全な内容にしてください。`
         : `Provide a very short (max 100 characters) interesting fact or explanation about the word "${word}" that a child could understand.
            [IMPORTANT] Do not include any inappropriate, sexual, or violent content. Keep it safe for children.`;

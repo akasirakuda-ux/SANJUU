@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { TILE_MATCH_HUNDRED_MODE, RAKUDA_TILE_MATCH_CREATE_FRAGMENT } from '../../lib/tileMatch/config';
 import {
   RAKUDA_HUNDRED_CREATE_FRAGMENT,
   firestoreLikeToMillis,
   formatFirestoreTimeJa,
   hundredDisplayDeadlineMs,
+  hundredRecruitHasOpenDeadline,
+  isHundredOpenRecruitSessionEnded,
+  isHundredBetweenRounds,
+  isHundredRoomInPlayOrStarting,
   resolveRenrakuPrivateReplyText,
-  shouldHideHundredPublicFromListItem,
+  shouldHideFromSanjuuRecruitBoard,
   type RenrakuPrivateReplyPayload,
 } from '../../lib/rakudaHubShell';
-import { saveHundredRestoreSession } from '../../lib/rakudaHundredRestore';
+import { loadHundredRestoreSession, saveHundredRestoreSession } from '../../lib/rakudaHundredRestore';
 import {
   parseRenrakuBoardPostIdFromHash,
   renrakuBoardPostElementId,
@@ -28,6 +33,14 @@ import RenrakuMessageBody from './RenrakuMessageBody';
 import RenrakuCopyTextButton from './RenrakuCopyTextButton';
 import { Trash2 } from 'lucide-react';
 import SanjuuBrandHeading from '../SanjuuBrandHeading';
+import {
+  isPublicMessageAnnouncement,
+  RENRAKU_ANNOUNCEMENTS_TIMELINE_ELEMENT_ID,
+  RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS,
+  RENRAKU_BOARD_TIMELINE_TAB_CHAT,
+  RENRAKU_CHAT_TIMELINE_ELEMENT_ID,
+  type RenrakuBoardTimelineTab,
+} from '../../lib/renrakuBoardPostKind';
 
 function createdAtMs(item: { createdAt?: unknown }): number {
   const m = firestoreLikeToMillis(item?.createdAt);
@@ -45,17 +58,23 @@ function hundredDeadlineMs(item: HundredPublicRecruit, room: HundredRoomListMeta
 function isHundredEnded(item: HundredPublicRecruit, room: HundredRoomListMeta | undefined, now: number): boolean {
   const st = room?.status ?? 'recruiting';
   if (st === 'finished' || st === 'cancelled') return true;
+  if (hundredRecruitHasOpenDeadline(item, room)) {
+    return isHundredOpenRecruitSessionEnded(item, room, now);
+  }
+  if (st === 'playing' || st === 'started') return false;
   const dl = hundredDeadlineMs(item, room);
   return dl !== null && now > dl;
 }
 
 function hundredSortRank(item: HundredPublicRecruit, room: HundredRoomListMeta | undefined, now: number): 1 | 2 | 3 {
+  if (item.roboPickupLounge) return 1;
   const st = room?.status ?? 'recruiting';
+  if (st === 'finished' || st === 'cancelled') return 3;
+  if (isHundredRoomInPlayOrStarting(room)) return 2;
   const dl = hundredDeadlineMs(item, room);
   const expired = dl !== null && now > dl;
   if (!expired && st === 'recruiting') return 1;
-  if (!expired && st === 'started') return 2;
-  // 期限切れ / 終了 / 取消 / その他は最下部
+  // 期限切れ / その他は最下部
   return 3;
 }
 
@@ -65,6 +84,8 @@ const PublicScreen: React.FC<{
     React.SetStateAction<'list' | 'closed' | 'hundred-detail' | 'hundred-wait' | 'hundred-board'>
   >;
   hundredRoomMetaByRoomId: Record<string, HundredRoomListMeta>;
+  /** getDoc 済みで `hundred_rooms` が無い roomId（掲示だけ残った終了募集） */
+  hundredMissingRoomIds?: Set<string>;
   publicHundred: HundredPublicRecruit[];
   publicMessages: Message[];
   /** 自分の伝言（renraku_private where fromUserUid==me） */
@@ -85,22 +106,32 @@ const PublicScreen: React.FC<{
   onTogglePostReaction: (postId: string) => void | Promise<void>;
   onToggleBoardPin: (postId: string, currentlyPinned: boolean) => void | Promise<void>;
   onJoinRoom?: (roomId: string) => void;
+  onJoinBoardGameRecruit?: (kind: 'reversi' | 'gomoku', roomCode: string) => void;
   onStartHundred: (roomId: string) => void;
+  onJoinHundredRecruit?: (recruit: HundredPublicRecruit) => void;
   /** 配信/低負荷モード（YouTube Live 安定化用） */
   streamMode?: boolean;
   onCloseHundredRecruitment: () => void | Promise<void>;
   onHundredGenerationCancelled?: () => void;
   /** `/keijiban` から入ったとき 30 募集ブロックを出さない */
   hideSanjuuRecruitmentSection?: boolean;
-  /** `/hundred` では【30SANJUU】以下（掲示板タイムライン等）を出さない */
+  /** `/hundred#rk-*-create` 直リンク時のみタイムライン等を隠す（募集一覧は `/hundred` でも表示） */
   hideBulletinBelowCreate?: boolean;
   /** false の間は「投稿なし」プレースホルダを出さない（初回取得前のチラつき防止） */
   publicTimelineHydrated?: boolean;
+  /** 掲示板タブ: 連絡事項 / みんなの会話 */
+  boardTimelineTab: RenrakuBoardTimelineTab;
+  setBoardTimelineTab: React.Dispatch<React.SetStateAction<RenrakuBoardTimelineTab>>;
   ensureAuth: () => Promise<void>;
+  onIssueYellowCard?: (userId: string, userName: string) => void | Promise<void>;
+  onIssueRedCard?: (userId: string, userName: string) => void | Promise<void>;
+  /** 募集作成直後に一覧 state へ即反映（Firestore 購読待ちの空白を防ぐ） */
+  upsertPublicHundred?: (recruit: HundredPublicRecruit) => void;
 }> = ({
   publicScreen,
   setPublicScreen,
   hundredRoomMetaByRoomId,
+  hundredMissingRoomIds,
   publicHundred,
   publicMessages,
   myPrivateMessages,
@@ -117,24 +148,31 @@ const PublicScreen: React.FC<{
   onTogglePostReaction,
   onToggleBoardPin,
   onJoinRoom,
+  onJoinBoardGameRecruit,
   onStartHundred,
+  onJoinHundredRecruit,
   streamMode = false,
   onCloseHundredRecruitment,
   onHundredGenerationCancelled,
   hideSanjuuRecruitmentSection = false,
   hideBulletinBelowCreate = false,
   publicTimelineHydrated = false,
+  boardTimelineTab,
+  setBoardTimelineTab,
   ensureAuth,
+  onIssueYellowCard,
+  onIssueRedCard,
+  upsertPublicHundred,
 }) => {
   const [now, setNow] = useState(() => Date.now());
 
-  /** `/hundred#rk-hundred-create` — 作成フォームのみ（SANJUU 以下を出さない） */
-  const atHundredCreateFocus =
+  /** `/hundred#rk-hundred-create` — ひと言探しの作成フォームのみ */
+  const atPickupCreateFocus =
     publicScreen === 'list' &&
     typeof window !== 'undefined' &&
     window.location.hash === `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`;
 
-  const hideBelowCreatePanel = atHundredCreateFocus || hideBulletinBelowCreate;
+  const hideBelowCreatePanel = atPickupCreateFocus || hideBulletinBelowCreate;
 
   // 期限が来た瞬間に「締切」へ & 並び替えが走るようにする
   useEffect(() => {
@@ -142,14 +180,28 @@ const PublicScreen: React.FC<{
     return () => window.clearInterval(t);
   }, [streamMode]);
 
-  /** `/hundred#rk-hundred-create` から開いたとき、作成フォームへスクロール */
+  /** 作成フォーム直リンク時にスクロール */
   useLayoutEffect(() => {
     if (publicScreen !== 'list') return;
     if (typeof window === 'undefined') return;
-    const want = `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`;
-    if (window.location.hash !== want) return;
+    const hash = window.location.hash;
+    if (hash === `#${RAKUDA_TILE_MATCH_CREATE_FRAGMENT}` || hash.endsWith(`#${RAKUDA_TILE_MATCH_CREATE_FRAGMENT}`)) {
+      try {
+        const u = new URL(window.location.href);
+        u.hash = '';
+        window.history.replaceState(window.history.state, '', `${u.pathname}${u.search}`);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const anchorId =
+      hash === `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}` || hash.endsWith(`#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`)
+        ? RAKUDA_HUNDRED_CREATE_FRAGMENT
+        : null;
+    if (!anchorId) return;
     const id = window.requestAnimationFrame(() => {
-      document.getElementById(RAKUDA_HUNDRED_CREATE_FRAGMENT)?.scrollIntoView({
+      document.getElementById(anchorId)?.scrollIntoView({
         behavior: 'smooth',
         block: 'start',
       });
@@ -158,12 +210,18 @@ const PublicScreen: React.FC<{
   }, [publicScreen]);
 
   /**
-   * hundred_public 一覧の「締切相当のさらに5分後」非表示（DB は残す）。
-   * recruitDeadlineAt 欠損時は createdAt + 募集枠 で締切相当を出す（hundredDisplayDeadlineMs と整合）。
+   * 掲示板の hundred_public 一覧: 取消・終了・満員・締切は三十募集板と同じく即非表示。
+   * （中止後も「募集中」のまま残る不具合対策 — room メタを見る）
    */
   const hundredVisibleForList = useMemo(
-    () => publicHundred.filter((h) => !shouldHideHundredPublicFromListItem(h, now)),
-    [publicHundred, now]
+    () =>
+      publicHundred.filter((h) => {
+        if (h.hundredMode === TILE_MATCH_HUNDRED_MODE) return false;
+        const room = h.roomId ? hundredRoomMetaByRoomId[h.roomId] : undefined;
+        const roomDocMissing = !!(h.roomId && hundredMissingRoomIds?.has(h.roomId));
+        return !shouldHideFromSanjuuRecruitBoard(h, room, now, { roomDocMissing });
+      }),
+    [publicHundred, hundredRoomMetaByRoomId, hundredMissingRoomIds, now]
   );
 
   /** hundred だけをソート。メッセージだけが変わったときに再ソートしないよう sortedPublicItems と分離。 */
@@ -180,9 +238,35 @@ const PublicScreen: React.FC<{
   }, [hundredVisibleForList, hundredRoomMetaByRoomId, now]);
 
   const sortedPublicItems = useMemo(() => {
-    const other = [...publicMessages].slice().sort((a: any, b: any) => {
-      return createdAtMs(b) - createdAtMs(a);
-    });
+    const isAnnouncementsTab = boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS;
+
+    const matchesTab = (item: { type?: string; postKind?: unknown }) => {
+      if (isAnnouncementsTab) {
+        return item.type === 'community' && isPublicMessageAnnouncement(item);
+      }
+      if (item.type === 'private') return isAdmin;
+      if (item.type === 'recruit') return true;
+      if (item.type === 'community') {
+        return !isPublicMessageAnnouncement(item);
+      }
+      return true;
+    };
+
+    const other = [...publicMessages]
+      .filter(matchesTab)
+      .slice()
+      .sort((a: any, b: any) => {
+        if (isAnnouncementsTab) {
+          const pinA = a.pinned === true ? 1 : 0;
+          const pinB = b.pinned === true ? 1 : 0;
+          if (pinA !== pinB) return pinB - pinA;
+        }
+        return createdAtMs(b) - createdAtMs(a);
+      });
+
+    if (isAnnouncementsTab) {
+      return other;
+    }
 
     // 全体の優先度: 募集中(期限内) → 進行中 → その他(メッセージ) → 期限切れ/終了
     const hundredTop = sortedHundredForList.filter((h) => {
@@ -195,7 +279,7 @@ const PublicScreen: React.FC<{
     });
 
     return [...hundredTop, ...other, ...hundredBottom];
-  }, [sortedHundredForList, publicMessages, hundredRoomMetaByRoomId, now]);
+  }, [sortedHundredForList, publicMessages, hundredRoomMetaByRoomId, now, boardTimelineTab, isAdmin]);
 
   const scrollToBoardPostFromHash = useCallback(() => {
     if (publicScreen !== 'list') return false;
@@ -229,13 +313,40 @@ const PublicScreen: React.FC<{
     return [...myPrivateMessages].slice().sort((a: any, b: any) => createdAtMs(b) - createdAtMs(a));
   }, [myPrivateMessages]);
 
+  const hundredRejoinRestore = useMemo(() => {
+    if (publicScreen !== 'list') return null;
+    const restored = loadHundredRestoreSession();
+    if (restored?.publicScreen !== 'hundred-wait' || !restored.selectedHundred?.roomId) return null;
+    const item = restored.selectedHundred;
+    const room = item.roomId ? hundredRoomMetaByRoomId[item.roomId] : undefined;
+    const roomDocMissing = !!(item.roomId && hundredMissingRoomIds?.has(item.roomId));
+    if (roomDocMissing) return null;
+    const st = room?.status ?? 'recruiting';
+    if (st === 'finished' || st === 'cancelled') return null;
+    if (isHundredOpenRecruitSessionEnded(item, room, now)) return null;
+    if (isHundredBetweenRounds(room) || isHundredRoomInPlayOrStarting(room)) return item;
+    return null;
+  }, [publicScreen, hundredRoomMetaByRoomId, hundredMissingRoomIds, now]);
+
+  const hundredRejoinBetweenRounds = useMemo(
+    () =>
+      hundredRejoinRestore?.roomId
+        ? isHundredBetweenRounds(hundredRoomMetaByRoomId[hundredRejoinRestore.roomId])
+        : false,
+    [hundredRejoinRestore, hundredRoomMetaByRoomId],
+  );
+
   const handleSelectHundred = useCallback(
     (item: HundredPublicRecruit) => {
       setSelectedHundred(item);
-      // 募集カードタップ → 詳細をスキップして待機ロビーへ（ゲスト導線をシンプルに）
+      if (onJoinHundredRecruit) {
+        onJoinHundredRecruit(item);
+        return;
+      }
       setPublicScreen('hundred-wait');
+      saveHundredRestoreSession({ publicScreen: 'hundred-wait', selectedHundred: item });
     },
-    [setSelectedHundred, setPublicScreen]
+    [onJoinHundredRecruit, setSelectedHundred, setPublicScreen],
   );
 
   const hundredItemCacheRef = useRef<Record<string, HundredPublicRecruit>>({});
@@ -319,6 +430,9 @@ const PublicScreen: React.FC<{
             room={item.roomId ? hundredRoomMetaByRoomId[item.roomId] : undefined}
             onSelect={getSelectHundredHandler(item as HundredPublicRecruit)}
             currentUid={currentUid}
+            isAdmin={isAdmin}
+            onIssueYellowCard={onIssueYellowCard}
+            onIssueRedCard={onIssueRedCard}
           />
         </motion.div>
       ) : item.type === 'recruit' ? (
@@ -330,6 +444,7 @@ const PublicScreen: React.FC<{
           isInteractionBlocked={isBoardInteractionBlocked}
           onDelete={getDeleteHandler(String(item.id), 'recruit')}
           onJoinRoom={onJoinRoom}
+          onJoinBoardGameRecruit={onJoinBoardGameRecruit}
         />
       ) : item.type === 'community' ? (
         <PublicBoardMessageCard
@@ -358,12 +473,15 @@ const PublicScreen: React.FC<{
     getSelectHundredHandler,
     getDeleteHandler,
     onJoinRoom,
+    onJoinBoardGameRecruit,
     isAdmin,
     currentUid,
     handleBulkBlockAuthorPosts,
     isBoardInteractionBlocked,
     onTogglePostReaction,
     onToggleBoardPin,
+    onIssueYellowCard,
+    onIssueRedCard,
   ]);
 
   return (
@@ -385,7 +503,7 @@ const PublicScreen: React.FC<{
           exit={{ opacity: 0 }}
           className={`mx-auto w-full max-w-lg pb-2 ${hideBelowCreatePanel ? 'px-3 py-6' : 'space-y-4'}`}
         >
-          {!hideSanjuuRecruitmentSection ? (
+          {!hideSanjuuRecruitmentSection && (!hideBelowCreatePanel || atPickupCreateFocus) ? (
             <section
               id={RAKUDA_HUNDRED_CREATE_FRAGMENT}
               className={
@@ -396,15 +514,21 @@ const PublicScreen: React.FC<{
               aria-label="ひと言探し 問題を作る"
             >
               <HundredCreatePanel
+                variant="pickup"
                 nickname={nickname}
                 userEmoji={userEmoji}
                 currentUid={currentUid}
                 isBoardInteractionBlocked={isBoardInteractionBlocked}
                 ensureAuth={ensureAuth}
                 onCreatedRecruit={(recruit) => {
+                  upsertPublicHundred?.(recruit);
                   setSelectedHundred(recruit);
-                  setPublicScreen('hundred-wait');
-                  saveHundredRestoreSession({ publicScreen: 'hundred-wait', selectedHundred: recruit });
+                  if (onJoinHundredRecruit) {
+                    onJoinHundredRecruit(recruit);
+                  } else {
+                    setPublicScreen('hundred-wait');
+                    saveHundredRestoreSession({ publicScreen: 'hundred-wait', selectedHundred: recruit });
+                  }
                   try {
                     const u = new URL(window.location.href);
                     u.hash = '';
@@ -425,6 +549,23 @@ const PublicScreen: React.FC<{
           ) : null}
 
           {!hideBelowCreatePanel ? <RenrakuchoBoardNotice /> : null}
+
+          {hundredRejoinRestore ? (
+            <div className="rounded-xl border-2 border-rk-hundred-recruit bg-rk-amber-50/90 px-3 py-3">
+              <p className="text-xs font-bold text-rk-slate-700 leading-snug">
+                {hundredRejoinBetweenRounds
+                  ? '前のお題はおわりました。次のお題を待てます（出入り自由）'
+                  : '進行中のひと言探しがあります（出入り自由・途中参加OK）'}
+              </p>
+              <button
+                type="button"
+                className="mt-2 w-full rounded-lg bg-rk-hundred-recruit px-3 py-2.5 text-sm font-black text-rk-white"
+                onClick={() => handleSelectHundred(hundredRejoinRestore)}
+              >
+                「{hundredRejoinRestore.targetWord || 'お題'}」の募集に戻る
+              </button>
+            </div>
+          ) : null}
 
           {!hideBelowCreatePanel && myPrivateVisible.length > 0 ? (
             <div className="space-y-2">
@@ -499,11 +640,52 @@ const PublicScreen: React.FC<{
               <p className="mt-3 px-1 text-center text-[11px] font-bold text-rk-slate-500">掲示板を読み込み中…</p>
             ) : (
               <>
-                <p
-                  id="renraku-public-timeline"
-                  className="mt-[0.3em] text-[15px] font-black uppercase tracking-widest text-rk-amber-950 px-1 scroll-mt-4"
+                <div
+                  className="mt-[0.3em] flex gap-1 p-1 rounded-xl border-2 border-[var(--rk-hub-bark)] bg-rk-white shadow-sm"
+                  role="tablist"
+                  aria-label="掲示板の表示切り替え"
                 >
-                  📝タイムライン（掲示・募集・探しもの）
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS}
+                    aria-controls={RENRAKU_ANNOUNCEMENTS_TIMELINE_ELEMENT_ID}
+                    onClick={() => setBoardTimelineTab(RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS)}
+                    className={`flex-1 min-h-[44px] rounded-lg px-2 text-xs font-black transition-colors ${
+                      boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS
+                        ? 'bg-rk-sky-100 text-rk-sky-950 border border-rk-sky-300 shadow-sm'
+                        : 'bg-transparent text-rk-slate-600 hover:bg-rk-slate-50'
+                    }`}
+                  >
+                    📢 連絡事項
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_CHAT}
+                    aria-controls={RENRAKU_CHAT_TIMELINE_ELEMENT_ID}
+                    onClick={() => setBoardTimelineTab(RENRAKU_BOARD_TIMELINE_TAB_CHAT)}
+                    className={`flex-1 min-h-[44px] rounded-lg px-2 text-xs font-black transition-colors ${
+                      boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_CHAT
+                        ? 'bg-rk-amber-100 text-rk-amber-950 border border-rk-amber-300 shadow-sm'
+                        : 'bg-transparent text-rk-slate-600 hover:bg-rk-slate-50'
+                    }`}
+                  >
+                    💬 みんなの会話
+                  </button>
+                </div>
+
+                <p
+                  id={
+                    boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS
+                      ? RENRAKU_ANNOUNCEMENTS_TIMELINE_ELEMENT_ID
+                      : RENRAKU_CHAT_TIMELINE_ELEMENT_ID
+                  }
+                  className="mt-2 text-[15px] font-black uppercase tracking-widest text-rk-amber-950 px-1 scroll-mt-4"
+                >
+                  {boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS
+                    ? '📢 らくだ珈琲からの連絡'
+                    : '📝 タイムライン（掲示・募集・探しもの）'}
                 </p>
                 {sortedPublicItems.length > 0 ? (
                   <AnimatePresence mode="popLayout" initial={false}>
@@ -511,7 +693,9 @@ const PublicScreen: React.FC<{
                   </AnimatePresence>
                 ) : (
                   <p className="px-1 py-6 text-center text-xs font-bold text-rk-slate-500 leading-relaxed">
-                    まだ投稿はありません。下のフォームから「掲示板にのせる」で最初の投稿をどうぞ。
+                    {boardTimelineTab === RENRAKU_BOARD_TIMELINE_TAB_ANNOUNCEMENTS
+                      ? '連絡事項はまだありません。'
+                      : 'まだ投稿はありません。下のフォームから「掲示板にのせる」で最初の投稿をどうぞ。'}
                   </p>
                 )}
               </>
@@ -528,6 +712,7 @@ const PublicScreen: React.FC<{
         currentUid={currentUid}
         setPublicScreen={setPublicScreen}
         onStartHundred={onStartHundred}
+        onJoinHundredRecruit={onJoinHundredRecruit}
         streamMode={streamMode}
         onCloseHundredRecruitment={onCloseHundredRecruitment}
         onHundredGenerationCancelled={onHundredGenerationCancelled}

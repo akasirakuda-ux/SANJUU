@@ -8,6 +8,8 @@ export type AppStatusOverlaysProps = {
   syncCountdown: number;
   generatingTitle?: string;
   generatingHint?: string;
+  /** しずかの間・みんなの願い — 生成スピナー等を出さない */
+  suppressForQuietImmersive?: boolean;
 };
 
 const AppStatusOverlays: React.FC<AppStatusOverlaysProps> = ({
@@ -18,29 +20,31 @@ const AppStatusOverlays: React.FC<AppStatusOverlaysProps> = ({
   syncCountdown,
   generatingTitle,
   generatingHint,
+  suppressForQuietImmersive = false,
 }) => {
   return (
     <>
-      {(isGenerating || (isMultiplay && roomStatus === 'start')) && (
-        <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-emerald-900/60 backdrop-blur-sm">
-          <div className="bg-white p-10 rounded-[3rem] shadow-2xl flex flex-col items-center gap-6 animate-scale-in border-[6px] border-emerald-100">
+      {!suppressForQuietImmersive &&
+        (isGenerating || (isMultiplay && roomStatus === 'start')) && (
+        <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-rk-success-900/60 backdrop-blur-sm">
+          <div className="bg-rk-white p-10 rounded-[3rem] shadow-2xl flex flex-col items-center gap-6 animate-scale-in border-[6px] border-rk-success-100">
             {isMultiplay && roomStatus === 'start' ? (
               <div className="flex flex-col items-center gap-2 mb-2">
-                <div className="text-7xl font-black text-slate-800 animate-bounce">
+                <div className="text-7xl font-black text-rk-slate-800 animate-bounce">
                   {syncCountdown > 0 ? syncCountdown : '!'}
                 </div>
-                <p className="font-black text-slate-800 text-2xl tracking-tighter">まもなくはじまるよ！</p>
+                <p className="font-black text-rk-slate-800 text-2xl tracking-tighter">まもなくはじまるよ！</p>
               </div>
             ) : (
               <>
-                <div className="w-16 h-16 border-8 border-emerald-100 border-t-emerald-500 rounded-full animate-spin"></div>
-                <p className="font-black text-slate-800 text-2xl tracking-tighter">
+                <div className="w-16 h-16 border-8 border-rk-success-100 border-t-rk-success-500 rounded-full animate-spin"></div>
+                <p className="font-black text-rk-slate-800 text-2xl tracking-tighter">
                   {generatingTitle ?? (language === 'ja' ? 'パズルを生成中...' : 'Generating...')}
                 </p>
                 {generatingHint ? (
-                  <p className="text-xs text-emerald-600 font-bold text-center">{generatingHint}</p>
+                  <p className="text-xs text-rk-success-600 font-bold text-center">{generatingHint}</p>
                 ) : isMultiplay ? (
-                  <p className="text-xs text-emerald-600 font-bold">同期の準備をしています</p>
+                  <p className="text-xs text-rk-success-600 font-bold">同期の準備をしています</p>
                 ) : null}
               </>
             )}

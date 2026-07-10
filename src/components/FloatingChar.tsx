@@ -30,7 +30,7 @@ interface FloatingCharProps {
   sizeScale?: number;
 }
 
-const FloatingChar: React.FC<FloatingCharProps> = ({ colorClass = "text-emerald-950/95", sizeScale = 1 }) => {
+const FloatingChar: React.FC<FloatingCharProps> = ({ colorClass = "text-rk-success-950/95", sizeScale = 1 }) => {
   const [style, setStyle] = useState<React.CSSProperties>({});
   const [char, setChar] = useState('');
   const [swayDuration, setSwayDuration] = useState('3s');
@@ -58,7 +58,7 @@ const FloatingChar: React.FC<FloatingCharProps> = ({ colorClass = "text-emerald-
 
   return (
     <div 
-      className={`absolute ${colorClass} select-none pointer-events-none animate-bubble font-black -z-10`}
+      className={`absolute ${colorClass} select-none pointer-events-none animate-bubble font-black`}
       style={style}
     >
       <div className="animate-sway" style={{ animationDuration: swayDuration }}>

@@ -10,15 +10,15 @@ const TabBar: React.FC<{
   if (!isAdmin) return null;
 
   const isHundred = themeVariant === 'hundred';
-  const activeBorder = isHundred ? 'border-red-600 text-red-950' : 'border-amber-200 text-slate-700';
-  const idle = isHundred ? 'border-transparent text-red-800/80' : 'border-transparent text-slate-600';
+  const activeBorder = isHundred ? 'border-rk-red-600 text-rk-red-950' : 'border-rk-amber-200 text-rk-slate-700';
+  const idle = isHundred ? 'border-transparent text-rk-red-800/80' : 'border-transparent text-rk-slate-600';
 
   return (
     <nav
       className={
         isHundred
-          ? 'flex bg-red-100 border-b border-red-200'
-          : 'flex bg-amber-50 border-b border-amber-200'
+          ? 'flex bg-rk-red-100 border-b border-rk-red-200'
+          : 'flex bg-rk-amber-50 border-b border-rk-amber-200'
       }
     >
       <button
@@ -35,7 +35,7 @@ const TabBar: React.FC<{
       >
         かんり
         {unreadCount > 0 && (
-          <span className="absolute top-1.5 right-1.5 min-w-[1.25rem] h-5 px-1 bg-red-600 text-white text-[10px] font-black rounded-lg flex items-center justify-center border-2 border-red-800 shadow-md z-10 animate-pulse">
+          <span className="absolute top-1.5 right-1.5 min-w-[1.25rem] h-5 px-1 bg-rk-red-600 text-rk-white text-[10px] font-black rounded-lg flex items-center justify-center border-2 border-rk-red-800 shadow-md z-10 animate-pulse">
             {unreadCount}
           </span>
         )}

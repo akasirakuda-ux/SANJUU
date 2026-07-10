@@ -19,8 +19,27 @@ import {
 } from 'firebase/firestore';
 import { onAuthStateChanged, signInAnonymously, type User } from 'firebase/auth';
 import { db, auth } from '../../firebase';
+import { readPresenceGreenUntilMs } from '../../lib/greenGateEmoji';
+import { greenUntilMsForPresenceHeartbeat } from '../../lib/rakudaGate';
 import {
-  cleanupStalePublicMessages,
+  mergeBoardGameRecruitMessages,
+  subscribeBoardGameOpenRecruitMessages,
+} from '../../lib/boardGameOpenRecruitMessages';
+import {
+  collectOpenBoardGameRecruitKeys,
+  shouldShowRenrakuRecruitOnBoard,
+} from '../../lib/renrakuRecruitVisibility';
+import {
+  RENRAKU_ANNOUNCEMENTS_TIMELINE_ELEMENT_ID,
+  RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT,
+  RENRAKU_BOARD_POST_KIND_CHAT,
+  RENRAKU_BOARD_TIMELINE_TAB_CHAT,
+  RENRAKU_CHAT_TIMELINE_ELEMENT_ID,
+  isLegacyRenrakuAnnouncement,
+  isPublicMessageAnnouncement,
+  type RenrakuBoardTimelineTab,
+} from '../../lib/renrakuBoardPostKind';
+import {
   ensureRenrakuAdminFirestoreAuth,
   fetchRenrakuPrivateForAdmin,
   firestoreLikeToMillis,
@@ -35,14 +54,37 @@ import {
   renrakuPrivateReplyRef,
   RENRAKU_PRIVATE_INBOX_RAKUDA,
   RENRAKU_STATUS_ACTIVE,
-  RENRAKU_VALIDATION_ERROR_MESSAGE,
+  RENRAKU_STATUS_BLOCKED,
+  RENRAKU_STATUS_DELETED,
   sortRenrakuPrivateMessagesNewestFirst,
-  validateRenrakuPost,
+  getRenrakuPostValidationError,
   type RenrakuPrivateReplyPayload,
   RAKUDA_HUNDRED_CREATE_FRAGMENT,
-  sanjuuRecruitBoardUrlWithRakudaProfile,
+  sanjuuRecruitBoardUrlForHundredRecruit,
 } from '../../lib/rakudaHubShell';
-import { applyHostCancelledHundredGeneration, hundredPublicListingDocId } from '../../lib/hundredRecruitCancel';
+import {
+  EMOJI_ROBO_PICKUP_LOUNGE_PROFILE,
+  RAKUDA_ROBO_PICKUP_LOUNGE_PROFILE,
+} from '../../lib/roboPickupLoungeConfig';
+import {
+  TILE_MATCH_HUNDRED_MODE,
+  TILE_MATCH_LABEL_JA,
+} from '../../lib/tileMatch/config';
+import {
+  emptyUserModerationState,
+  mergeAdminModerationList,
+  parseUserModerationDoc,
+  USER_MODERATION_COLLECTION,
+  userHasModerationCards,
+  type UserModerationRecord,
+} from '../../lib/userModeration';
+import { ADMIN_UIDS, isProtectedRenrakuAdminUid } from '../../constants/renrakuAdmin';
+import { fetchHundredRoomMetaByIds } from '../../lib/hundredRoomListMeta';
+import { cleanupStaleHundredPublicListings } from '../../lib/cleanupStaleHundredPublic';
+import {
+  mergePinnedRoboPickupLoungePublicRecruits,
+  parseHundredPublicRecruitDoc,
+} from '../../lib/hundredPublicRoboPins';
 import { clearHundredRestoreSession, saveHundredRestoreSession } from '../../lib/rakudaHundredRestore';
 import {
   ActiveUser,
@@ -62,6 +104,7 @@ import RenrakuchoLayout from './RenrakuchoLayout';
 import { RK_RENRAKU_LAST_SEEN_MS_KEY } from '../../hooks/useRenrakuchoUnreadBadge';
 import { useActiveUserPlayRecruitBadges } from '../../hooks/useActiveUserPlayRecruitBadges';
 import {
+  deleteRenrakuReport,
   renrakuBoardPostElementId,
   renrakuReportCanOpenOnBoard,
   type RenrakuReportRecord,
@@ -71,6 +114,14 @@ import {
   setRenrakuPresenceBreak,
   writeRenrakuOnBreakLocal,
 } from '../../lib/renrakuPresenceBreak';
+import {
+  isRenrakuPlayInviteActive,
+  isRenrakuPlayInviteLocalActive,
+  readRenrakuPlayInviteUntilLocal,
+  setRenrakuPresencePlayInvite,
+  writeRenrakuPlayInviteLocal,
+  RENRAKU_PLAY_INVITE_TTL_MS,
+} from '../../lib/renrakuPresencePlayInvite';
 
 /** `renraku_presence` の Heartbeat が 2 分のため、それより短い TTL だと一覧から一瞬消える。余裕を持って 5 分 */
 const RENRRAKU_ACTIVE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -131,7 +182,10 @@ interface RenrakuchoProps {
   setUserEmoji: (e: string) => void;
   setNickname: (n: string) => void;
   onJoinRoom?: (roomId: string) => void;
-  onStartHundred: (roomId: string) => void;
+  onJoinBoardGameRecruit?: (kind: 'reversi' | 'gomoku', roomCode: string) => void;
+  onStartHundred: (roomId: string, opts?: { hundredMode?: string }) => void | Promise<void>;
+  /** 待機室画面を出さず参加（盤面へ） */
+  onJoinHundredRecruit?: (recruit: HundredPublicRecruit) => void;
   ensureAuth: () => Promise<void>;
   initialActiveTab?: 'post' | 'public' | 'admin';
   initialPublicScreen?: RenrakuchoPublicScreenState;
@@ -143,10 +197,15 @@ interface RenrakuchoProps {
   viewerCount?: number;
   /** 配信/低負荷モード（YouTube Live 安定化用） */
   streamMode?: boolean;
+  setStreamMode?: (enabled: boolean) => void;
   /** App シェルの Auth（Renrakucho 内 onAuthStateChanged より先に確定していることがある） */
   shellFirebaseUser?: User | null;
   /** 管理者が伝言を読めないときの Google 再ログイン */
   onRequestGoogleLogin?: () => void;
+  /** Stripe / 感謝パス同期の緑ゲート期限（在席 heartbeat 用） */
+  myGreenUntilMs?: number | null;
+  /** しゅっせき100日以上（自分の絵文字枠・茶） */
+  myShussekiRegular?: boolean;
 }
 
 
@@ -180,7 +239,9 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   setUserEmoji,
   setNickname,
   onJoinRoom,
+  onJoinBoardGameRecruit,
   onStartHundred,
+  onJoinHundredRecruit,
   ensureAuth,
   initialActiveTab,
   initialPublicScreen,
@@ -189,8 +250,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   setIsAdVisible,
   viewerCount,
   streamMode = false,
+  setStreamMode,
   shellFirebaseUser = null,
   onRequestGoogleLogin,
+  myGreenUntilMs = null,
+  myShussekiRegular = false,
 }) => {
   // 画面遷移 state
   const [activeTab, setActiveTab] = useState<'main' | 'admin'>(() =>
@@ -202,6 +266,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
 
   /** 掲示板一覧表示中だけタイムライン系を購読（待機/盤面では HundredWaitPanel 等に任せ Listen 負荷を抑える） */
   const subscribePublicTimeline = activeTab === 'main' && publicScreen === 'list';
+  /** ひと言探し募集一覧 — main タブ中は待機/盤面でも購読（一覧に戻ったとき即反映） */
+  const subscribeHundredPublic = activeTab === 'main';
+  /** かんりタブの掲示・募集モデレーション用（削除後に一覧を更新するため main 以外でも購読） */
+  const subscribeBoardRecruitForAdmin = activeTab === 'admin';
+  const subscribeBoardRecruitTimeline = subscribePublicTimeline || subscribeBoardRecruitForAdmin;
 
   // 選択 state（画面遷移に紐づく）
   const [selectedHundred, setSelectedHundred] = useState<HundredPublicRecruit | null>(() =>
@@ -213,17 +282,30 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   // 投稿 state
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [isBlocked, setIsBlocked] = useState(false);
+  /** blockedUsers（旧）またはレッドカード — サイト全体の利用停止 */
+  const [isOnBlocklist, setIsOnBlocklist] = useState(false);
+  /** 自分へのイエロー／レッドカード */
+  const [myYellowCardCount, setMyYellowCardCount] = useState(0);
+  const [myRedCardActive, setMyRedCardActive] = useState(false);
   /** 投稿成功直後の連打防止（5 秒） */
   const [sendCooldownUntilMs, setSendCooldownUntilMs] = useState(0);
+  const [boardTimelineTab, setBoardTimelineTab] = useState<RenrakuBoardTimelineTab>(RENRAKU_BOARD_TIMELINE_TAB_CHAT);
   const RENRAKU_POST_COOLDOWN_MS = 5000;
 
-  /** 掲示板（public_messages） */
+  /** 掲示板（public_messages）— みんなの会話（最新120件） */
   const [boardMessages, setBoardMessages] = useState<Message[]>([]);
+  /** 連絡事項タブ専用（postKind=announcement・件数上限500・会話の120件から漏れない） */
+  const [announcementMessages, setAnnouncementMessages] = useState<Message[]>([]);
   /** ルーム募集のみ（renraku_public の type===recruit） */
   const [recruitMessages, setRecruitMessages] = useState<Message[]>([]);
+  /** リバーシ・五目並べの待機ルーム（Firestore 直読み・掲示板表示の正） */
+  const [liveBoardGameRecruitMessages, setLiveBoardGameRecruitMessages] = useState<Message[]>([]);
+  /** 募集の5分TTL判定用（掲示板マージ） */
+  const [recruitBoardNow, setRecruitBoardNow] = useState(() => Date.now());
+  const endedRecruitCleanupOnceRef = useRef<Set<string>>(new Set());
   const [publicHundred, setPublicHundred] = useState<HundredPublicRecruit[]>([]);
   const [hundredRoomMetaByRoomId, setHundredRoomMetaByRoomId] = useState<Record<string, HundredRoomListMeta>>({});
+  const [hundredMissingRoomIds, setHundredMissingRoomIds] = useState<Set<string>>(() => new Set());
   /** らくだ先生宛（renraku_private）— 管理者タブ＆管理者タイムライン用 */
   const [privateMessages, setPrivateMessages] = useState<Message[]>([]);
   /** 自分の伝言（renraku_private where fromUserUid==me） */
@@ -233,9 +315,12 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     Record<string, RenrakuPrivateReplyPayload>
   >({});
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([]);
+  const [moderatedUsers, setModeratedUsers] = useState<UserModerationRecord[]>([]);
   const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([]);
   const [myOnBreak, setMyOnBreak] = useState(() => readRenrakuOnBreakLocal());
+  const [myPlayInvite, setMyPlayInvite] = useState(() => isRenrakuPlayInviteLocalActive());
   const [breakToggleBusy, setBreakToggleBusy] = useState(false);
+  const [playInviteToggleBusy, setPlayInviteToggleBusy] = useState(false);
   const [breakPopupOpen, setBreakPopupOpen] = useState(false);
   /** タイムライン3系の初回取得完了（空配列のまま「投稿なし」を出さないため） */
   const [publicTimelineHydrated, setPublicTimelineHydrated] = useState(false);
@@ -252,6 +337,13 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     setPublicTimelineHydrated(false);
   }, [streamMode]);
 
+  useEffect(() => {
+    void import('../../lib/roboPickupLoungeRefresh').then(({ ensureRoboPickupLoungeRoomDoc }) => {
+      void ensureRoboPickupLoungeRoomDoc(RAKUDA_ROBO_PICKUP_LOUNGE_PROFILE).catch(() => {});
+      void ensureRoboPickupLoungeRoomDoc(EMOJI_ROBO_PICKUP_LOUNGE_PROFILE).catch(() => {});
+    });
+  }, []);
+
   /** Firestore が返らないときも掲示板 UI を出す（無限に空白のままにしない） */
   useEffect(() => {
     if (publicTimelineHydrated) return;
@@ -260,8 +352,8 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   }, [publicTimelineHydrated, streamMode]);
 
   const joinHundredPublicConsumedRef = useRef(false);
+  const joinHundredPublicLastIdRef = useRef('');
   useEffect(() => {
-    if (joinHundredPublicConsumedRef.current) return;
     let joinId = '';
     try {
       joinId = (new URLSearchParams(window.location.search).get('joinHundredPublic') || '').trim();
@@ -269,6 +361,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       joinId = '';
     }
     if (!joinId) return;
+    if (joinId !== joinHundredPublicLastIdRef.current) {
+      joinHundredPublicLastIdRef.current = joinId;
+      joinHundredPublicConsumedRef.current = false;
+    }
+    if (joinHundredPublicConsumedRef.current) return;
 
     const stripJoinParam = () => {
       try {
@@ -291,11 +388,15 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
         return;
       }
       joinHundredPublicConsumedRef.current = true;
-      clearHundredRestoreSession();
       setActiveTab('main');
       setSelectedHundred(item);
-      setPublicScreen('hundred-wait');
       stripJoinParam();
+      if (onJoinHundredRecruit) {
+        onJoinHundredRecruit(item);
+        return;
+      }
+      setPublicScreen('hundred-wait');
+      saveHundredRestoreSession({ publicScreen: 'hundred-wait', selectedHundred: item });
     };
 
     const cached = publicHundred.find((h) => h.id === joinId);
@@ -324,6 +425,14 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
           id: snap.id,
           type: 'hundred',
           targetWord: typeof x.targetWord === 'string' ? x.targetWord : '',
+          hundredMode:
+            x.hundredMode === 'pickup' || x.hundredMode === 'tile_match' ? x.hundredMode : undefined,
+          tileMatchDifficulty:
+            x.tileMatchDifficulty === 'easy' ||
+            x.tileMatchDifficulty === 'normal' ||
+            x.tileMatchDifficulty === 'hard'
+              ? x.tileMatchDifficulty
+              : undefined,
           boardSize: typeof x.boardSize === 'number' ? x.boardSize : Number(x.boardSize) || 0,
           boardCols: typeof x.boardCols === 'number' ? x.boardCols : undefined,
           boardRows: typeof x.boardRows === 'number' ? x.boardRows : undefined,
@@ -334,6 +443,12 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
           hostEmoji: typeof x.hostEmoji === 'string' ? x.hostEmoji : undefined,
           recruitDeadlineAt: x.recruitDeadlineAt,
           gameTimeLimitSec: typeof x.gameTimeLimitSec === 'number' ? x.gameTimeLimitSec : undefined,
+          hintsEnabled: x.hintsEnabled === false ? false : undefined,
+          pickupCharset:
+            x.pickupCharset === 'digit' || x.pickupCharset === 'latin' || x.pickupCharset === 'hiragana'
+              ? x.pickupCharset
+              : undefined,
+          roboPickupLounge: x.roboPickupLounge === true ? true : undefined,
         });
       } catch (e) {
         console.warn('[Renrakucho] joinHundredPublic fetch failed', e);
@@ -356,7 +471,22 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   useEffect(() => {
     const bump = () => setPathSync((n) => n + 1);
     window.addEventListener('popstate', bump);
-    return () => window.removeEventListener('popstate', bump);
+    const origPush = window.history.pushState.bind(window.history);
+    const origReplace = window.history.replaceState.bind(window.history);
+    const wrap =
+      (fn: typeof window.history.pushState) =>
+      (...args: Parameters<typeof window.history.pushState>) => {
+        const r = fn(...args);
+        bump();
+        return r;
+      };
+    window.history.pushState = wrap(origPush);
+    window.history.replaceState = wrap(origReplace);
+    return () => {
+      window.removeEventListener('popstate', bump);
+      window.history.pushState = origPush;
+      window.history.replaceState = origReplace;
+    };
   }, []);
 
   /** `/keijiban` 直リンク時は見出しを「掲示板」にし、30 募集ブロックは出さない */
@@ -370,7 +500,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     }
   }, [pathSync]);
 
-  /** `/hundred` 直リンク（３０の問題を作るハブ） */
+  /** `/hundred#rk-*-create` 直リンク（問題を作るホスト用。裸の `/hundred` リロードは席メニューへ） */
   const isHundredHubPath = useMemo(() => {
     void pathSync;
     try {
@@ -446,6 +576,22 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   }, [publicScreen, selectedHundred?.roomId]);
 
   const isAdmin = useMemo(() => isRenrakuAdmin(effectiveAuthUser), [effectiveAuthUser]);
+
+  const rejectProtectedAdminModeration = useCallback(
+    (userId: string, displayName?: string): boolean => {
+      if (!isProtectedRenrakuAdminUid(userId)) return false;
+      setNotification({
+        type: 'error',
+        text:
+          displayName?.includes('らくだ')
+            ? 'この投稿は管理者（らくださん）本人のUIDです。なりすましの別アカウントなら、通報時の投稿者UIDが取れているか確認してください。'
+            : '管理者アカウントにはレッドカードを付けられません。',
+      });
+      setTimeout(() => setNotification(null), 4500);
+      return true;
+    },
+    [],
+  );
   const needsGoogleLoginBar = useMemo(() => {
     const auth = getAuthLoginDisplay(effectiveAuthUser, true);
     return auth.tone !== 'google';
@@ -497,10 +643,28 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     };
   }, [isAdmin, visiblePrivateMessages]);
 
-  /** タイムライン用: 掲示・募集に加え、管理者のみ非公開伝言をマージ（createdAt はミリ秒で統一してソート） */
+  /** タイムライン用: 掲示（会話＋連絡事項）・募集に加え、管理者のみ非公開伝言をマージ */
+  const visibleBoardPosts = useMemo(() => {
+    const byId = new Map<string, Message>();
+    for (const m of boardMessages) {
+      if (!isRenrakuEntryVisible(m)) continue;
+      byId.set(m.id, m);
+    }
+    for (const m of announcementMessages) {
+      if (!isRenrakuEntryVisible(m)) continue;
+      byId.set(m.id, { ...m, type: 'community' as const });
+    }
+    return [...byId.values()];
+  }, [boardMessages, announcementMessages]);
+
+  const mergedRecruitMessages = useMemo(
+    () => mergeBoardGameRecruitMessages(recruitMessages, liveBoardGameRecruitMessages, recruitBoardNow),
+    [recruitMessages, liveBoardGameRecruitMessages, recruitBoardNow],
+  );
+
   const publicMessages = useMemo(() => {
     const priv = isAdmin ? visiblePrivateMessages.map((m) => ({ ...m, type: 'private' as const })) : [];
-    const merged = [...boardMessages, ...recruitMessages, ...priv];
+    const merged = [...visibleBoardPosts, ...mergedRecruitMessages, ...priv];
     return merged.sort((a, b) => {
       const ta = firestoreLikeToMillis(a.createdAt);
       const tb = firestoreLikeToMillis(b.createdAt);
@@ -508,14 +672,44 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       const mb = tb != null && Number.isFinite(tb) ? tb : 0;
       return mb - ma;
     });
-  }, [boardMessages, recruitMessages, visiblePrivateMessages, isAdmin]);
+  }, [visibleBoardPosts, mergedRecruitMessages, visiblePrivateMessages, isAdmin]);
+
+  useEffect(() => {
+    if (streamMode) return;
+    const intervalMs = 10000;
+    const t = window.setInterval(() => setRecruitBoardNow(Date.now()), intervalMs);
+    return () => window.clearInterval(t);
+  }, [streamMode]);
+
+  /** 終了した renraku_public 募集を本人・管理者がバックグラウンド削除（一覧に残さない） */
+  useEffect(() => {
+    if (streamMode) return;
+    if (!authUser) return;
+    const openKeys = collectOpenBoardGameRecruitKeys(liveBoardGameRecruitMessages);
+    const nowMs = recruitBoardNow;
+    for (const msg of recruitMessages) {
+      if (shouldShowRenrakuRecruitOnBoard(msg, nowMs, openKeys)) continue;
+      if (endedRecruitCleanupOnceRef.current.has(msg.id)) continue;
+      const isMine = msg.fromUserUid === authUser.uid;
+      if (!isAdmin && !isMine) continue;
+      endedRecruitCleanupOnceRef.current.add(msg.id);
+      void deleteDoc(doc(db, 'renraku_public', msg.id)).catch((e) => {
+        endedRecruitCleanupOnceRef.current.delete(msg.id);
+        console.warn('[Renrakucho] ended recruit cleanup skip', msg.id, e);
+      });
+    }
+  }, [authUser?.uid, isAdmin, liveBoardGameRecruitMessages, recruitBoardNow, recruitMessages, streamMode]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const privN = isAdmin ? visiblePrivateMessages.length : 0;
     console.log('[Renrakucho] タイムライン統合', {
-      public_messages: boardMessages.length,
+      public_messages: visibleBoardPosts.length,
+      'public_messages(会話のみ)': boardMessages.length,
+      'public_messages(連絡事項)': announcementMessages.length,
       'renraku_public(募集)': recruitMessages.length,
+      'board_game_open(募集)': liveBoardGameRecruitMessages.length,
+      'board_game_merged(募集)': mergedRecruitMessages.length,
       'renraku_private(表示のみ)': privN,
       マージ後総件数: publicMessages.length,
       isAdmin,
@@ -523,7 +717,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     });
   }, [
     boardMessages.length,
+    announcementMessages.length,
+    visibleBoardPosts.length,
     recruitMessages.length,
+    liveBoardGameRecruitMessages.length,
+    mergedRecruitMessages.length,
     visiblePrivateMessages.length,
     privateMessages.length,
     publicMessages.length,
@@ -567,13 +765,20 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     const registerPresence = async () => {
       if (auth.currentUser?.uid !== presenceUid) return;
       try {
-        await setDoc(presenceRef, {
-          uid: presenceUid,
-          name: nickname,
-          emoji: userEmoji,
-          lastActive: serverTimestamp(),
-          onBreak: myOnBreak,
-        });
+        const greenUntilMs = greenUntilMsForPresenceHeartbeat(myGreenUntilMs);
+        await setDoc(
+          presenceRef,
+          {
+            uid: presenceUid,
+            name: nickname,
+            emoji: userEmoji,
+            lastActive: serverTimestamp(),
+            onBreak: myOnBreak,
+            playInvite: myPlayInvite,
+            ...(greenUntilMs != null ? { greenUntilMs } : { greenUntilMs: null }),
+          },
+          { merge: true }
+        );
       } catch (error) {
         console.error('Error registering presence:', error);
       }
@@ -598,7 +803,28 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
         console.warn('Error removing presence:', e);
       });
     };
-  }, [authUser, nickname, userEmoji, showProfileSetup, streamMode, myOnBreak]);
+  }, [authUser, nickname, userEmoji, showProfileSetup, streamMode, myOnBreak, myPlayInvite, myGreenUntilMs]);
+
+  useEffect(() => {
+    if (!myPlayInvite) return;
+    const until = readRenrakuPlayInviteUntilLocal();
+    const msLeft = until > 0 ? until - Date.now() : RENRAKU_PLAY_INVITE_TTL_MS;
+    if (msLeft <= 0) {
+      setMyPlayInvite(false);
+      writeRenrakuPlayInviteLocal(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setMyPlayInvite(false);
+      writeRenrakuPlayInviteLocal(false);
+      if (authUser) {
+        void setRenrakuPresencePlayInvite(authUser.uid, false).catch(() => {
+          /* ignore */
+        });
+      }
+    }, msLeft);
+    return () => window.clearTimeout(timer);
+  }, [authUser, myPlayInvite]);
 
   const toggleMyBreak = useCallback(async () => {
     if (!authUser || showProfileSetup || breakToggleBusy) return;
@@ -627,10 +853,49 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     }
   }, [authUser, breakToggleBusy, myOnBreak, showProfileSetup]);
 
+  const toggleMyPlayInvite = useCallback(async () => {
+    if (!authUser || showProfileSetup || playInviteToggleBusy) return;
+    const next = !myPlayInvite;
+    const untilMs = next ? Date.now() + RENRAKU_PLAY_INVITE_TTL_MS : 0;
+    setMyPlayInvite(next);
+    writeRenrakuPlayInviteLocal(next, untilMs);
+    setPlayInviteToggleBusy(true);
+    try {
+      await setRenrakuPresencePlayInvite(authUser.uid, next);
+      window.dispatchEvent(
+        new CustomEvent('SHOW_TOAST', {
+          detail: next ? '「一緒に遊ぶ？」を出しました（30分）' : '「一緒に遊ぶ？」をやめました',
+        }),
+      );
+    } catch (e) {
+      setMyPlayInvite(!next);
+      writeRenrakuPlayInviteLocal(!next, !next ? 0 : Date.now() + RENRAKU_PLAY_INVITE_TTL_MS);
+      console.error('Error toggling play invite:', e);
+      window.dispatchEvent(
+        new CustomEvent('SHOW_TOAST', { detail: '「一緒に遊ぶ？」の切り替えに失敗しました' }),
+      );
+    } finally {
+      setPlayInviteToggleBusy(false);
+    }
+  }, [authUser, myPlayInvite, playInviteToggleBusy, showProfileSetup]);
+
   // Firestore 購読（Presence: Listen to active users）
   useEffect(() => {
     if (!subscribePublicTimeline) return;
     const q = query(collection(db, 'renraku_presence'), orderBy('lastActive', 'desc'), limit(streamMode ? 18 : 80));
+
+    const mapPresenceDoc = (d: { id: string; data: () => Record<string, unknown> }): ActiveUser => {
+      const data = d.data();
+      return {
+        uid: typeof data.uid === 'string' ? data.uid : d.id,
+        name: typeof data.name === 'string' ? data.name : 'ななし',
+        emoji: typeof data.emoji === 'string' ? data.emoji : '👤',
+        lastActive: data.lastActive,
+        onBreak: data.onBreak === true,
+        playInvite: isRenrakuPlayInviteActive(data),
+        greenUntilMs: readPresenceGreenUntilMs(data),
+      };
+    };
 
     const applyUsers = (list: ActiveUser[]) => {
       const now = Date.now();
@@ -653,7 +918,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       const unsubscribe = onSnapshot(
         q,
         (snapshot) => {
-          applyUsers(snapshot.docs.map((d) => d.data() as ActiveUser));
+          applyUsers(snapshot.docs.map((d) => mapPresenceDoc(d)));
         },
         (error) => {
           console.error('Error fetching active users:', error);
@@ -667,7 +932,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       try {
         const snap = await getDocs(q);
         if (cancelled) return;
-        applyUsers(snap.docs.map((d) => d.data() as ActiveUser));
+        applyUsers(snap.docs.map((d) => mapPresenceDoc(d)));
       } catch (e) {
         if (!cancelled) console.warn('[Renrakucho] renraku_presence poll failed', e);
       }
@@ -680,14 +945,16 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     };
   }, [streamMode, subscribePublicTimeline]);
 
-  // Firestore 購読（Check block status）
+  const isExcludedFromRakuda = !isAdmin && (isOnBlocklist || myRedCardActive);
+
+  // Firestore 購読（旧 blockedUsers — レッドカード一覧に合流表示）
   useEffect(() => {
     if (!authUser) return;
     const blockRef = doc(db, 'blockedUsers', authUser.uid);
     const unsubscribe = onSnapshot(
       blockRef,
       (doc) => {
-        setIsBlocked(doc.exists());
+        setIsOnBlocklist(doc.exists());
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, 'blockedUsers');
@@ -696,10 +963,37 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     return () => unsubscribe();
   }, [authUser?.uid]);
 
+  // Firestore 購読（自分のイエロー／レッドカード）
+  useEffect(() => {
+    if (!authUser) {
+      setMyYellowCardCount(0);
+      setMyRedCardActive(false);
+      return;
+    }
+    const modRef = doc(db, USER_MODERATION_COLLECTION, authUser.uid);
+    const unsubscribe = onSnapshot(
+      modRef,
+      (snap) => {
+        if (!snap.exists()) {
+          setMyYellowCardCount(0);
+          setMyRedCardActive(false);
+          return;
+        }
+        const parsed = parseUserModerationDoc(snap.id, snap.data() as Record<string, unknown>);
+        setMyYellowCardCount(parsed.yellowCount);
+        setMyRedCardActive(parsed.redActive);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, USER_MODERATION_COLLECTION);
+      }
+    );
+    return () => unsubscribe();
+  }, [authUser?.uid]);
+
   // Firestore（コミュニティ掲示板 public_messages）
   // 配信モードでは負荷優先でリアルタイム購読を止め、低頻度の取得に切り替える。
   useEffect(() => {
-    if (!subscribePublicTimeline) return;
+    if (!subscribeBoardRecruitTimeline) return;
     const q = query(collection(db, 'public_messages'), orderBy('createdAt', 'desc'), limit(streamMode ? 30 : 120));
 
     if (!streamMode) {
@@ -744,11 +1038,112 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streamMode, markTimelineHydration, subscribePublicTimeline]);
+  }, [streamMode, markTimelineHydration, subscribeBoardRecruitTimeline]);
+
+  /** 連絡事項（postKind=announcement ＋ レガシー管理者投稿）— 120件の外も拾う。失敗時は orderBy なしで再試行 */
+  useEffect(() => {
+    if (!subscribeBoardRecruitTimeline) return;
+
+    const mergeAnnouncementDocs = (
+      annDocs: import('firebase/firestore').QueryDocumentSnapshot[],
+      adminDocs: import('firebase/firestore').QueryDocumentSnapshot[],
+    ) => {
+      const byId = new Map<string, Message>();
+      for (const d of [...annDocs, ...adminDocs]) {
+        const row = { id: d.id, ...d.data(), type: 'community' as const } as Message;
+        if (!isPublicMessageAnnouncement(row)) continue;
+        byId.set(d.id, row);
+      }
+      setAnnouncementMessages([...byId.values()]);
+    };
+
+    const emptyAnnouncementDocs = (): {
+      annDocs: import('firebase/firestore').QueryDocumentSnapshot[];
+      adminDocs: import('firebase/firestore').QueryDocumentSnapshot[];
+    } => ({ annDocs: [], adminDocs: [] });
+
+    const fetchAnnouncementDocs = async (): Promise<{
+      annDocs: import('firebase/firestore').QueryDocumentSnapshot[];
+      adminDocs: import('firebase/firestore').QueryDocumentSnapshot[];
+    }> => {
+      const annIndexed = query(
+        collection(db, 'public_messages'),
+        where('postKind', '==', RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT),
+        orderBy('createdAt', 'desc'),
+        limit(500),
+      );
+      const adminIndexed = query(
+        collection(db, 'public_messages'),
+        where('fromUserUid', 'in', [...ADMIN_UIDS]),
+        orderBy('createdAt', 'desc'),
+        limit(500),
+      );
+      try {
+        const [annSnap, adminSnap] = await Promise.all([getDocs(annIndexed), getDocs(adminIndexed)]);
+        return { annDocs: annSnap.docs, adminDocs: adminSnap.docs };
+      } catch (indexedErr) {
+        console.warn('[Renrakucho] announcement indexed query failed, fallback', indexedErr);
+        try {
+          const annPlain = query(
+            collection(db, 'public_messages'),
+            where('postKind', '==', RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT),
+            limit(500),
+          );
+          const adminPlain = query(
+            collection(db, 'public_messages'),
+            where('fromUserUid', 'in', [...ADMIN_UIDS]),
+            limit(500),
+          );
+          const [annSnap, adminSnap] = await Promise.all([getDocs(annPlain), getDocs(adminPlain)]);
+          return { annDocs: annSnap.docs, adminDocs: adminSnap.docs };
+        } catch (fallbackErr) {
+          console.warn('[Renrakucho] announcement fallback query failed', fallbackErr);
+          return emptyAnnouncementDocs();
+        }
+      }
+    };
+
+    if (!streamMode) {
+      let cancelled = false;
+      const load = async () => {
+        try {
+          const { annDocs, adminDocs } = await fetchAnnouncementDocs();
+          if (cancelled) return;
+          mergeAnnouncementDocs(annDocs, adminDocs);
+        } catch (e) {
+          if (!cancelled) console.warn('[Renrakucho] announcement_messages', e);
+        }
+      };
+      void load();
+      const timer = window.setInterval(() => void load(), 15000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(timer);
+      };
+    }
+
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const { annDocs, adminDocs } = await fetchAnnouncementDocs();
+        if (cancelled) return;
+        mergeAnnouncementDocs(annDocs, adminDocs);
+      } catch (e) {
+        if (!cancelled) console.warn('[Renrakucho] announcement_messages(poll)', e);
+      }
+    };
+
+    void fetchOnce();
+    const timer = window.setInterval(fetchOnce, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [streamMode, subscribeBoardRecruitTimeline]);
 
   // Firestore（ルーム募集のみ renraku_public）
   useEffect(() => {
-    if (!subscribePublicTimeline) return;
+    if (!subscribeBoardRecruitTimeline) return;
     const q = query(collection(db, 'renraku_public'), orderBy('createdAt', 'desc'), limit(streamMode ? 30 : 120));
 
     if (!streamMode) {
@@ -793,22 +1188,49 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streamMode, markTimelineHydration, subscribePublicTimeline]);
+  }, [streamMode, markTimelineHydration, subscribeBoardRecruitTimeline]);
+
+  // リバーシ・五目並べ: 待機ルームを直接購読（renraku_public が空でも掲示板に出す）
+  useEffect(() => {
+    if (!subscribeBoardRecruitTimeline) {
+      setLiveBoardGameRecruitMessages([]);
+      return;
+    }
+    const unsubscribe = subscribeBoardGameOpenRecruitMessages(
+      (messages) => {
+        setLiveBoardGameRecruitMessages(messages);
+        markTimelineHydration('recruit');
+      },
+      (error) => {
+        markTimelineHydration('recruit');
+        handleFirestoreError(error, OperationType.LIST, 'board_game_open_recruits');
+      },
+    );
+    return () => unsubscribe();
+  }, [markTimelineHydration, subscribeBoardRecruitTimeline]);
 
   // Firestore（Fetch Hundred Public Recruitments）
   useEffect(() => {
-    if (!subscribePublicTimeline) return;
+    if (!subscribeHundredPublic) return;
     const q = query(collection(db, 'hundred_public'), orderBy('createdAt', 'desc'), limit(streamMode ? 30 : 120));
 
     if (!streamMode) {
       const unsubscribe = onSnapshot(
         q,
         (snapshot) => {
-          const list = snapshot.docs.map(
-            (d) => ({ id: d.id, ...d.data(), type: 'hundred' as const } as HundredPublicRecruit)
+          const list = snapshot.docs.map((d) =>
+            parseHundredPublicRecruitDoc(d.id, d.data() as Record<string, unknown>),
           );
-          setPublicHundred(list);
-          markTimelineHydration('hundred');
+          void mergePinnedRoboPickupLoungePublicRecruits(db, list)
+            .then((merged) => {
+              setPublicHundred(merged);
+              markTimelineHydration('hundred');
+            })
+            .catch((e) => {
+              console.warn('[Renrakucho] merge pinned robo hundred_public', e);
+              setPublicHundred(list);
+              markTimelineHydration('hundred');
+            });
         },
         (error) => {
           markTimelineHydration('hundred');
@@ -823,10 +1245,12 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       try {
         const snap = await getDocs(q);
         if (cancelled) return;
-        const list = snap.docs.map(
-          (d) => ({ id: d.id, ...d.data(), type: 'hundred' as const } as HundredPublicRecruit)
+        const list = snap.docs.map((d) =>
+          parseHundredPublicRecruitDoc(d.id, d.data() as Record<string, unknown>),
         );
-        setPublicHundred(list);
+        const merged = await mergePinnedRoboPickupLoungePublicRecruits(db, list);
+        if (cancelled) return;
+        setPublicHundred(merged);
         markTimelineHydration('hundred');
       } catch (e) {
         if (!cancelled) {
@@ -842,72 +1266,66 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streamMode, markTimelineHydration, subscribePublicTimeline]);
+  }, [streamMode, markTimelineHydration, subscribeHundredPublic]);
 
-  // 一覧用: hundred_rooms の状態（配信モードではリアルタイム購読を抑制）
+  // 一覧用: hundred_public に載っている roomId だけ getDoc（collection limit 60 では終了分の状態が取れない）
   useEffect(() => {
-    if (!subscribePublicTimeline) return;
-    if (!streamMode) {
-      const unsub = onSnapshot(
-        query(collection(db, 'hundred_rooms'), limit(60)),
-        (snap) => {
-          const next: Record<string, HundredRoomListMeta> = {};
-          snap.forEach((d) => {
-            const x = d.data() as Record<string, unknown>;
-            next[d.id] = {
-              status: typeof x.status === 'string' ? x.status : 'recruiting',
-              playerCount: typeof x.playerCount === 'number' ? x.playerCount : undefined,
-              recruitDeadlineAt: x.recruitDeadlineAt,
-              hostNickname: typeof x.hostNickname === 'string' ? x.hostNickname : undefined,
-              hostEmoji: typeof x.hostEmoji === 'string' ? x.hostEmoji : undefined,
-              gameTimeLimitSec:
-                typeof x.gameTimeLimitSec === 'number'
-                  ? normalizeHundredGameTimeLimitSec(x.gameTimeLimitSec)
-                  : undefined,
-              endReason: typeof x.endReason === 'string' ? x.endReason : undefined,
-            };
-          });
-          setHundredRoomMetaByRoomId(next);
-        },
-        (e) => console.error('hundred_rooms list meta', e)
-      );
-      return () => unsub();
+    if (!subscribeHundredPublic) return;
+
+    const roomIds = [
+      ...new Set(
+        publicHundred.map((h) => (typeof h.roomId === 'string' ? h.roomId.trim() : '')).filter(Boolean)
+      ),
+    ];
+
+    if (roomIds.length === 0) {
+      setHundredRoomMetaByRoomId({});
+      setHundredMissingRoomIds(new Set());
+      return;
     }
 
     let cancelled = false;
-    const fetchOnce = async () => {
+    const load = async () => {
       try {
-        const snap = await getDocs(query(collection(db, 'hundred_rooms'), limit(60)));
+        const { byRoomId, missingRoomIds } = await fetchHundredRoomMetaByIds(db, roomIds);
         if (cancelled) return;
-        const next: Record<string, HundredRoomListMeta> = {};
-        snap.forEach((d) => {
-          const x = d.data() as Record<string, unknown>;
-          next[d.id] = {
-            status: typeof x.status === 'string' ? x.status : 'recruiting',
-            playerCount: typeof x.playerCount === 'number' ? x.playerCount : undefined,
-            recruitDeadlineAt: x.recruitDeadlineAt,
-            hostNickname: typeof x.hostNickname === 'string' ? x.hostNickname : undefined,
-            hostEmoji: typeof x.hostEmoji === 'string' ? x.hostEmoji : undefined,
-            gameTimeLimitSec:
-              typeof x.gameTimeLimitSec === 'number'
-                ? normalizeHundredGameTimeLimitSec(x.gameTimeLimitSec)
-                : undefined,
-            endReason: typeof x.endReason === 'string' ? x.endReason : undefined,
-          };
-        });
-        setHundredRoomMetaByRoomId(next);
+        setHundredRoomMetaByRoomId(byRoomId);
+        setHundredMissingRoomIds(missingRoomIds);
+        // 終わった／お題間の掲示を DB からも消す（非表示だけでは残る不安対策）
+        void cleanupStaleHundredPublicListings({
+          db,
+          items: publicHundred,
+          roomMetaByRoomId: byRoomId,
+          missingRoomIds,
+        }).catch((e) => console.warn('[Renrakucho] hundred_public stale cleanup', e));
       } catch (e) {
-        if (!cancelled) console.warn('hundred_rooms list meta (poll)', e);
+        if (!cancelled) console.warn('hundred_rooms list meta by id', e);
       }
     };
 
-    void fetchOnce();
-    const timer = window.setInterval(fetchOnce, 30000);
+    void load();
+    const pollMs = streamMode ? 10_000 : 5_000;
+    const timer = window.setInterval(() => void load(), pollMs);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [streamMode, subscribePublicTimeline]);
+  }, [publicHundred, streamMode, subscribeHundredPublic]);
+
+  const upsertPublicHundred = useCallback((recruit: HundredPublicRecruit) => {
+    setPublicHundred((prev) => {
+      const next = prev.filter((h) => h.id !== recruit.id);
+      return [recruit, ...next];
+    });
+    const roomId = (recruit.roomId || '').trim();
+    if (!roomId) return;
+    setHundredMissingRoomIds((prev) => {
+      if (!prev.has(roomId)) return prev;
+      const next = new Set(prev);
+      next.delete(roomId);
+      return next;
+    });
+  }, []);
 
   const reloadAdminPrivateInbox = useCallback(() => {
     setAdminPrivateReloadTick((n) => n + 1);
@@ -925,67 +1343,74 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     let unsubscribe: (() => void) | undefined;
 
     void (async () => {
-      setAdminPrivateLoadState('loading');
-      const initial = await fetchRenrakuPrivateForAdmin(effectiveAuthUser);
-      if (cancelled) return;
+      try {
+        setAdminPrivateLoadState('loading');
+        const initial = await fetchRenrakuPrivateForAdmin(effectiveAuthUser);
+        if (cancelled) return;
 
-      if (initial.ok === true) {
-        setPrivateMessages(initial.messages);
-        setAdminPrivateLoadState('ok');
-        console.log('[Renrakucho] renraku_private getDocs OK', {
-          docCount: initial.messages.length,
-          authUid: auth.currentUser?.uid ?? null,
-        });
-      } else {
-        if (initial.code === 'permission-denied') {
-          setAdminPrivateLoadState('denied');
-          setNotification({
-            type: 'error',
-            text: '伝言を読めません。トップで Google にログインし直してから「かんり」タブを開いてください。',
-          });
-          window.setTimeout(() => setNotification(null), 6000);
-          return;
-        }
-        if (initial.code === 'not-admin') {
-          setAdminPrivateLoadState('idle');
-          return;
-        }
-        setAdminPrivateLoadState('error');
-        console.error('[Renrakucho] renraku_private getDocs FAILED', initial.error);
-      }
-
-      await ensureRenrakuAdminFirestoreAuth(effectiveAuthUser);
-      if (cancelled) return;
-
-      const q = query(collection(db, 'renraku_private'), limit(200));
-      unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const msgs = sortRenrakuPrivateMessagesNewestFirst(
-            snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Message))
-          );
-          setPrivateMessages(msgs);
+        if (initial.ok === true) {
+          setPrivateMessages(initial.messages);
           setAdminPrivateLoadState('ok');
-        },
-        (error: unknown) => {
-          const code =
-            typeof error === 'object' && error !== null && 'code' in error
-              ? String((error as { code?: string }).code)
-              : '';
-          console.error('[Renrakucho] renraku_private onSnapshot FAILED', code, error);
-          if (code === 'permission-denied') {
+          console.log('[Renrakucho] renraku_private getDocs OK', {
+            docCount: initial.messages.length,
+            authUid: auth.currentUser?.uid ?? null,
+          });
+        } else {
+          if (initial.code === 'permission-denied') {
             setAdminPrivateLoadState('denied');
             setNotification({
               type: 'error',
-              text: '伝言を読めません。Googleでログインし直すか、管理者UIDの設定を確認してください。',
+              text: '伝言を読めません。トップで Google にログインし直してから「かんり」タブを開いてください。',
             });
             window.setTimeout(() => setNotification(null), 6000);
-          } else {
-            setAdminPrivateLoadState('error');
+            return;
           }
-          handleFirestoreError(error, OperationType.LIST, 'renraku_private');
+          if (initial.code === 'not-admin') {
+            setAdminPrivateLoadState('idle');
+            return;
+          }
+          setAdminPrivateLoadState('error');
+          console.error('[Renrakucho] renraku_private getDocs FAILED', initial.error);
         }
-      );
+
+        await ensureRenrakuAdminFirestoreAuth(effectiveAuthUser);
+        if (cancelled) return;
+
+        const q = query(collection(db, 'renraku_private'), limit(200));
+        unsubscribe = onSnapshot(
+          q,
+          (snapshot) => {
+            const msgs = sortRenrakuPrivateMessagesNewestFirst(
+              snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Message))
+            );
+            setPrivateMessages(msgs);
+            setAdminPrivateLoadState('ok');
+          },
+          (error: unknown) => {
+            const code =
+              typeof error === 'object' && error !== null && 'code' in error
+                ? String((error as { code?: string }).code)
+                : '';
+            console.error('[Renrakucho] renraku_private onSnapshot FAILED', code, error);
+            if (code === 'permission-denied') {
+              setAdminPrivateLoadState('denied');
+              setNotification({
+                type: 'error',
+                text: '伝言を読めません。Googleでログインし直すか、管理者UIDの設定を確認してください。',
+              });
+              window.setTimeout(() => setNotification(null), 6000);
+            } else {
+              setAdminPrivateLoadState('error');
+            }
+            handleFirestoreError(error, OperationType.LIST, 'renraku_private');
+          }
+        );
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[Renrakucho] admin private inbox bootstrap failed', error);
+          setAdminPrivateLoadState('error');
+        }
+      }
     })();
 
     return () => {
@@ -1121,12 +1546,43 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     return () => unsubscribe();
   }, [isAdmin]);
 
+  // Firestore 購読（カード付与ユーザー: 管理者のみ）
+  useEffect(() => {
+    if (!isAdmin) return;
+    const q = query(collection(db, USER_MODERATION_COLLECTION), orderBy('updatedAt', 'desc'), limit(80));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const users = snapshot.docs
+          .map((d) => parseUserModerationDoc(d.id, d.data() as Record<string, unknown>))
+          .filter(userHasModerationCards);
+        setModeratedUsers(users);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, USER_MODERATION_COLLECTION);
+      }
+    );
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  const adminModerationRows = useMemo(
+    () => mergeAdminModerationList(moderatedUsers, blockedUsers),
+    [moderatedUsers, blockedUsers],
+  );
+
   // Firestore 書き込み関数
   /** 投稿先は引数で固定（掲示板／らくだ先生宛） */
-  const handleSend = async (explicitMode: 'public' | 'private') => {
+  const handleSend = async (explicitMode: 'public' | 'private' | 'announcement') => {
     if (!message.trim()) return;
-    if (isBlocked) {
-      setNotification({ type: 'error', text: '投稿できません。' });
+    if (isExcludedFromRakuda) {
+      setNotification({
+        type: 'error',
+        text: 'レッドカードのため、らくだ珈琲を利用できません。',
+      });
+      return;
+    }
+    if (explicitMode === 'announcement' && !isAdmin) {
+      setNotification({ type: 'error', text: '連絡事項の投稿は管理者のみです。' });
       return;
     }
     if (Date.now() < sendCooldownUntilMs) {
@@ -1136,8 +1592,14 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       });
       return;
     }
-    if (!validateRenrakuPost(message, nickname, effectiveAuthUser)) {
-      setNotification({ type: 'error', text: RENRAKU_VALIDATION_ERROR_MESSAGE });
+    const postValidationError = getRenrakuPostValidationError(
+      message,
+      nickname,
+      userEmoji,
+      effectiveAuthUser
+    );
+    if (postValidationError) {
+      setNotification({ type: 'error', text: postValidationError });
       return;
     }
 
@@ -1198,6 +1660,9 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       if (postingPrivate) {
         data.isRead = false;
         data.toInbox = RENRAKU_PRIVATE_INBOX_RAKUDA;
+      } else {
+        data.postKind =
+          explicitMode === 'announcement' ? RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT : RENRAKU_BOARD_POST_KIND_CHAT;
       }
 
       console.log('[Renrakucho] handleSend: addDoc payload keys', Object.keys(data));
@@ -1207,12 +1672,21 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       setSendCooldownUntilMs(Date.now() + RENRAKU_POST_COOLDOWN_MS);
       setNotification({
         type: 'success',
-        text: postingPrivate ? 'らくだ珈琲に伝言を送りました' : 'メッセージを送りました',
+        text:
+          postingPrivate
+            ? 'らくだ珈琲に伝言を送りました'
+            : explicitMode === 'announcement'
+              ? '連絡事項を掲示しました'
+              : 'メッセージを送りました',
       });
       setTimeout(() => setNotification(null), 3000);
       if (postingToPublicBoard) {
+        const timelineId =
+          explicitMode === 'announcement'
+            ? RENRAKU_ANNOUNCEMENTS_TIMELINE_ELEMENT_ID
+            : RENRAKU_CHAT_TIMELINE_ELEMENT_ID;
         window.requestAnimationFrame(() => {
-          document.getElementById('renraku-public-timeline')?.scrollIntoView({
+          document.getElementById(timelineId)?.scrollIntoView({
             behavior: 'smooth',
             block: 'center',
           });
@@ -1244,6 +1718,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       if (target === 'private' && !isAdmin) {
         await ensureAuth();
         await deleteDoc(doc(db, 'renraku_private', id));
+        window.dispatchEvent(new CustomEvent('SHOW_TOAST', { detail: '削除しました' }));
         return;
       }
       if (!isAdmin) {
@@ -1255,28 +1730,39 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
           const ref = doc(db, 'public_messages', id);
           const snap = await getDoc(ref);
           if (!snap.exists()) return;
-          const d = snap.data() as { fromUserUid?: unknown; pinned?: unknown } | undefined;
+          const d = snap.data() as { fromUserUid?: unknown; pinned?: unknown; postKind?: unknown } | undefined;
           if (d?.pinned === true) return;
+          if (d?.postKind === RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT) return;
           if (typeof d?.fromUserUid !== 'string' || d.fromUserUid !== uid) return;
           await deleteDoc(ref);
+          window.dispatchEvent(new CustomEvent('SHOW_TOAST', { detail: '削除しました' }));
         }
         return;
       }
+      await ensureAuth();
+      await ensureRenrakuAdminFirestoreAuth(effectiveAuthUser);
       const soft = renrakuAdminSoftDeleteFields();
       if (target === 'private') {
         await updateDoc(doc(db, 'renraku_private', id), soft);
-        return;
-      }
-      if (target === 'recruit') {
+        setPrivateMessages((prev) => prev.filter((m) => m.id !== id));
+      } else if (target === 'recruit') {
         await updateDoc(doc(db, 'renraku_public', id), soft);
-        return;
+        setRecruitMessages((prev) => prev.filter((m) => m.id !== id));
+      } else {
+        await updateDoc(doc(db, 'public_messages', id), soft);
+        setBoardMessages((prev) => prev.filter((m) => m.id !== id));
       }
-      await updateDoc(doc(db, 'public_messages', id), soft);
+      window.dispatchEvent(new CustomEvent('SHOW_TOAST', { detail: '投稿を削除しました' }));
     } catch (error) {
       console.error('Error deleting message:', error);
       const path =
         target === 'private' ? 'renraku_private' : target === 'recruit' ? 'renraku_public' : 'public_messages';
       handleFirestoreError(error, OperationType.UPDATE, path);
+      window.dispatchEvent(
+        new CustomEvent('SHOW_TOAST', {
+          detail: '削除に失敗しました。Google ログインを確認してからもう一度試してください。',
+        }),
+      );
     }
   };
 
@@ -1290,7 +1776,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   };
 
   const handleTogglePostReaction = async (postId: string) => {
-    if (isBlocked || !authUser) return;
+    if (isExcludedFromRakuda || !authUser) return;
     try {
       await ensureAuth();
     } catch {
@@ -1321,16 +1807,23 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     }
   };
 
-  const handleBlock = async (userId: string, userName: string) => {
-    if (!isAdmin) return;
+  const handleClearRedCard = async (userId: string) => {
+    if (!isAdmin || !userId) return;
     try {
-      await setDoc(doc(db, 'blockedUsers', userId), {
-        userName,
-        blockedAt: serverTimestamp(),
-      });
+      const modRef = doc(db, USER_MODERATION_COLLECTION, userId);
+      const modSnap = await getDoc(modRef);
+      if (modSnap.exists()) {
+        await updateDoc(modRef, {
+          redActive: false,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await deleteDoc(doc(db, 'blockedUsers', userId)).catch(() => {});
+      setNotification({ type: 'success', text: 'レッドカードを解除しました' });
+      setTimeout(() => setNotification(null), 2500);
     } catch (error) {
-      console.error('Error blocking user:', error);
-      handleFirestoreError(error, OperationType.WRITE, 'blockedUsers');
+      console.error('handleClearRedCard', error);
+      handleFirestoreError(error, OperationType.UPDATE, USER_MODERATION_COLLECTION);
     }
   };
 
@@ -1374,13 +1867,33 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     });
   }, []);
 
-  /** 通報対応: 同一投稿者 uid の投稿を3コレクションで一括で status: blocked にする */
+  /** 通報レコードのみ削除（投稿は残す） */
+  const handleDismissReport = useCallback(async (reportId: string) => {
+    if (!isAdmin || !reportId) return;
+    if (
+      !window.confirm(
+        'この通報記録を削除しますか？\n\n対象の投稿はそのまま残ります。対処の必要がなかった場合などに使います。',
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteRenrakuReport(reportId);
+      window.dispatchEvent(new CustomEvent('SHOW_TOAST', { detail: '通報を削除しました' }));
+    } catch (error) {
+      console.error('[Renrakucho] handleDismissReport', error);
+      handleFirestoreError(error, OperationType.WRITE, 'renraku_reports');
+    }
+  }, [isAdmin]);
+
+  /** 通報対応: 同一投稿者 uid の投稿を3コレクションで一括で status: blocked にする（利用停止はレッドカード） */
   const handleBulkBlockAuthorPosts = useCallback(
     async (authorUid: string, authorName?: string) => {
       if (!isAdmin || !authorUid) return;
+      if (rejectProtectedAdminModeration(authorUid, authorName)) return;
       if (
         !window.confirm(
-          'この投稿者の全投稿（公開掲示・募集・非公開）を「非表示（blocked）」にしますか？'
+          'この投稿者の全投稿（公開掲示・募集・非公開）を「非表示」にしますか？\n\nサイトの利用停止にはレッドカードを使えます。'
         )
       ) {
         return;
@@ -1391,13 +1904,6 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
         const n2 = await adminBatchSetBlockedByAuthorUid('renraku_public', authorUid, fields);
         const n3 = await adminBatchSetBlockedByAuthorUid('renraku_private', authorUid, fields);
 
-        // Also register to the ban list so AdminScreen "出禁リスト" reflects this action.
-        const name = String(authorName ?? '').trim() || '（名前不明）';
-        await setDoc(
-          doc(db, 'blockedUsers', authorUid),
-          { userName: name, blockedAt: serverTimestamp() },
-          { merge: true }
-        );
         setNotification({
           type: 'success',
           text: `非表示にしました（合計 ${n1 + n2 + n3} 件）`,
@@ -1412,15 +1918,185 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
     [isAdmin]
   );
 
-  const handleUnblock = async (userId: string) => {
-    if (!isAdmin) return;
+  const upsertModerationCard = async (
+    userId: string,
+    userName: string,
+    cardType: 'yellow' | 'red',
+  ) => {
+    const ref = doc(db, USER_MODERATION_COLLECTION, userId);
+    const snap = await getDoc(ref);
+    const prev = snap.exists() ? parseUserModerationDoc(snap.id, snap.data() as Record<string, unknown>) : null;
+    const base = prev ?? { ...emptyUserModerationState(), userName };
+    await setDoc(
+      ref,
+      {
+        userName: String(userName || base.userName || '（名前不明）').trim() || '（名前不明）',
+        yellowCount: cardType === 'yellow' ? base.yellowCount + 1 : base.yellowCount,
+        redCount: cardType === 'red' ? base.redCount + 1 : base.redCount,
+        redActive: cardType === 'red' ? true : base.redActive,
+        lastCardType: cardType,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  };
+
+  const handleIssueYellowCard = async (userId: string, userName: string) => {
+    if (!isAdmin || !userId) return;
+    if (rejectProtectedAdminModeration(userId, userName)) return;
+    if (!window.confirm(`「${userName || 'この利用者'}」にイエローカードを付けますか？\n\n警告のみで、投稿はできます。`)) {
+      return;
+    }
     try {
-      await deleteDoc(doc(db, 'blockedUsers', userId));
+      await upsertModerationCard(userId, userName, 'yellow');
+      setNotification({ type: 'success', text: 'イエローカードを付けました' });
+      setTimeout(() => setNotification(null), 2500);
     } catch (error) {
-      console.error('Error unblocking user:', error);
-      handleFirestoreError(error, OperationType.DELETE, 'blockedUsers');
+      console.error('handleIssueYellowCard', error);
+      handleFirestoreError(error, OperationType.WRITE, USER_MODERATION_COLLECTION);
     }
   };
+
+  const handleIssueRedCard = async (userId: string, userName: string) => {
+    if (!isAdmin || !userId) return;
+    if (rejectProtectedAdminModeration(userId, userName)) return;
+    if (
+      !window.confirm(
+        `「${userName || 'この利用者'}」にレッドカードを付けますか？\n\nらくだ珈琲🐫☕の利用をすべて止めます。管理タブから解除できます。`
+      )
+    ) {
+      return;
+    }
+    try {
+      await upsertModerationCard(userId, userName, 'red');
+      await deleteDoc(doc(db, 'blockedUsers', userId)).catch(() => {});
+      setNotification({ type: 'success', text: 'レッドカードを付けました' });
+      setTimeout(() => setNotification(null), 2500);
+    } catch (error) {
+      console.error('handleIssueRedCard', error);
+      handleFirestoreError(error, OperationType.WRITE, USER_MODERATION_COLLECTION);
+    }
+  };
+
+  const handleClearAllCards = async (userId: string) => {
+    if (!isAdmin || !userId) return;
+    if (!window.confirm('この利用者のイエロー／レッドカードをすべてリセットしますか？')) {
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, USER_MODERATION_COLLECTION, userId)).catch(() => {});
+      await deleteDoc(doc(db, 'blockedUsers', userId)).catch(() => {});
+      setNotification({ type: 'success', text: 'カードをリセットしました' });
+      setTimeout(() => setNotification(null), 2500);
+    } catch (error) {
+      console.error('handleClearAllCards', error);
+      handleFirestoreError(error, OperationType.DELETE, USER_MODERATION_COLLECTION);
+    }
+  };
+
+  /** 連絡事項タブ — 非表示・削除済みの復元 ＋ レガシー投稿の連絡事項化 */
+  const handleRestoreAdminPublicPosts = useCallback(async () => {
+    if (!isAdmin) return;
+    if (
+      !window.confirm(
+        '連絡事項の復元・整理をしますか？\n\n・削除・非表示を戻す\n・古い管理者投稿を「連絡事項」として再表示\n\n（みんなの会話の投稿は対象外）',
+      )
+    ) {
+      return;
+    }
+    try {
+      await ensureAuth();
+      await ensureRenrakuAdminFirestoreAuth(effectiveAuthUser);
+      const [annSnap, adminSnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, 'public_messages'),
+            where('postKind', '==', RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT),
+            limit(500),
+          ),
+        ),
+        getDocs(
+          query(collection(db, 'public_messages'), where('fromUserUid', 'in', [...ADMIN_UIDS]), limit(500)),
+        ),
+      ]);
+      const byId = new Map<string, (typeof annSnap.docs)[number]>();
+      for (const d of [...annSnap.docs, ...adminSnap.docs]) {
+        byId.set(d.id, d);
+      }
+
+      let restored = 0;
+      let migrated = 0;
+      let batch = writeBatch(db);
+      let batchOps = 0;
+      const commitBatch = async () => {
+        if (batchOps === 0) return;
+        await batch.commit();
+        batch = writeBatch(db);
+        batchOps = 0;
+      };
+
+      for (const d of byId.values()) {
+        const data = d.data();
+        if (!isPublicMessageAnnouncement(data)) continue;
+        const hidden =
+          data.status === RENRAKU_STATUS_BLOCKED ||
+          data.status === RENRAKU_STATUS_DELETED ||
+          data.blockedByAdmin === true ||
+          data.deletedByAdmin === true;
+        if (hidden) {
+          batch.update(d.ref, {
+            status: RENRAKU_STATUS_ACTIVE,
+            blockedByAdmin: false,
+            deletedByAdmin: false,
+          });
+          restored += 1;
+          batchOps += 1;
+        } else if (
+          isLegacyRenrakuAnnouncement(data) &&
+          data.postKind !== RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT
+        ) {
+          batch.update(d.ref, { postKind: RENRAKU_BOARD_POST_KIND_ANNOUNCEMENT });
+          migrated += 1;
+          batchOps += 1;
+        }
+        if (batchOps >= 450) await commitBatch();
+      }
+      await commitBatch();
+
+      if (restored === 0 && migrated === 0) {
+        const visibleCount = [...byId.values()].filter(
+          (d) => isPublicMessageAnnouncement(d.data()) && isRenrakuEntryVisible(d.data()),
+        ).length;
+        if (byId.size === 0) {
+          setNotification({
+            type: 'error',
+            text: '連絡事項の記録が見つかりません。30日以上前の管理者投稿は自動整理で消えている可能性があります',
+          });
+        } else if (visibleCount > 0) {
+          setNotification({
+            type: 'success',
+            text: `連絡事項 ${visibleCount} 件は掲示板にあります。「連絡事項」タブを開き直してください`,
+          });
+        } else {
+          setNotification({
+            type: 'error',
+            text: '連絡事項は見つかりましたが、すべて非表示です。もう一度お試しください',
+          });
+        }
+        setTimeout(() => setNotification(null), 4500);
+        return;
+      }
+      const parts = [
+        restored > 0 ? `${restored} 件復元` : '',
+        migrated > 0 ? `${migrated} 件を連絡事項に整理` : '',
+      ].filter(Boolean);
+      setNotification({ type: 'success', text: parts.join('・') });
+      setTimeout(() => setNotification(null), 4000);
+    } catch (error) {
+      console.error('handleRestoreAdminPublicPosts', error);
+      handleFirestoreError(error, OperationType.UPDATE, 'restore-announcements');
+    }
+  }, [isAdmin, effectiveAuthUser, ensureAuth, handleFirestoreError]);
 
   const handleSendPrivateReply = useCallback(
     async (messageId: string, reply: string) => {
@@ -1483,7 +2159,8 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       } catch (error: unknown) {
         console.error('[Renrakucho] private reply failed', error);
         handleFirestoreError(error, OperationType.UPDATE, 'renraku_private/private_reply');
-        throw error;
+        setNotification({ type: 'error', text: '返信の送信に失敗しました。' });
+        window.setTimeout(() => setNotification(null), 3000);
       }
     },
     [isAdmin, ensureAuth]
@@ -1504,18 +2181,25 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
   const currentUid = authUser?.uid;
 
   /** みんなであそぶ: ホストが問題生成キャンセルで募集を閉じたとき（hundred_public 削除と同様に一覧へ） */
-  const navigateToSanjuuRecruitBoard = useCallback(() => {
-    clearHundredRestoreSession();
-    setSelectedHundred(null);
-    setPublicScreen('list');
-    window.location.assign(
-      sanjuuRecruitBoardUrlWithRakudaProfile({ emoji: userEmoji, nickname: nickname || '' })
-    );
-  }, [userEmoji, nickname]);
+  const navigateToSanjuuRecruitBoard = useCallback(
+    (hundredMode?: string | null) => {
+      clearHundredRestoreSession();
+      setSelectedHundred(null);
+      setPublicScreen('list');
+      window.location.assign(
+        sanjuuRecruitBoardUrlForHundredRecruit({
+          emoji: userEmoji,
+          nickname: nickname || '',
+          hundredMode: hundredMode ?? selectedHundred?.hundredMode,
+        })
+      );
+    },
+    [userEmoji, nickname, selectedHundred?.hundredMode]
+  );
 
   const handleHundredGenerationCancelled = useCallback(() => {
-    navigateToSanjuuRecruitBoard();
-  }, [navigateToSanjuuRecruitBoard]);
+    navigateToSanjuuRecruitBoard(selectedHundred?.hundredMode);
+  }, [navigateToSanjuuRecruitBoard, selectedHundred?.hundredMode]);
 
   const startHundredPersistingRestore = useCallback(
     (roomDocId: string) => {
@@ -1534,19 +2218,20 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       : 'default';
   }, [activeTab, publicScreen]);
 
-  const atHundredCreateFocus =
+  const atPickupCreateFocus =
     activeTab === 'main' &&
     publicScreen === 'list' &&
     typeof window !== 'undefined' &&
     window.location.hash === `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`;
 
+  /** `/hundred` でも作成フォーム直リンク時だけタイムラインを隠す（募集一覧は表示） */
+  const hundredHubCreateFormOnly = isHundredHubPath && atPickupCreateFocus;
+
   const hidePostScreenFooter =
-    atHundredCreateFocus ||
-    isHundredHubPath ||
-    (activeTab === 'main' && publicScreen === 'hundred-wait') ||
+    atPickupCreateFocus ||
     hundredProblemsGenerating;
 
-  const showActiveUsersStrip = !(activeTab === 'main' && publicScreen === 'hundred-wait');
+  const showActiveUsersStrip = true;
   const playRecruitBadgesByUid = useActiveUserPlayRecruitBadges(showActiveUsersStrip, streamMode);
 
   return (
@@ -1554,18 +2239,14 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       onBack={onBack}
       themeVariant={themeVariant}
       headerTitle={
-        activeTab === 'main' && publicScreen === 'hundred-wait'
-          ? '30待機室'
-          : activeTab === 'main' &&
-              publicScreen === 'list' &&
-              typeof window !== 'undefined' &&
-              window.location.hash === `#${RAKUDA_HUNDRED_CREATE_FRAGMENT}`
-            ? '30の問題を作る'
-            : isKeijibanPath
-              ? '掲示板'
-              : undefined
+        atPickupCreateFocus
+          ? 'ひと言探しの問題を作る'
+          : isKeijibanPath
+            ? '掲示板'
+            : undefined
       }
-      suppressActiveUsersStrip={activeTab === 'main' && publicScreen === 'hundred-wait'}
+      suppressActiveUsersStrip={false}
+      showHeaderActiveUserEmojis={isKeijibanPath && activeTab === 'main'}
       playRecruitBadgesByUid={playRecruitBadgesByUid}
       activeTab={activeTab}
       setActiveTab={setActiveTab}
@@ -1590,6 +2271,8 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
       onCloseBreakPopup={() => setBreakPopupOpen(false)}
       canOpenBreakPopup={!!authUser && !showProfileSetup}
       currentUid={currentUid}
+      myGreenUntilMs={myGreenUntilMs}
+      myShussekiRegular={myShussekiRegular}
       nickname={nickname}
       userEmoji={userEmoji}
       myOnBreak={myOnBreak}
@@ -1597,6 +2280,11 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
         void toggleMyBreak();
       }}
       breakToggleDisabled={breakToggleBusy}
+      myPlayInvite={myPlayInvite}
+      onTogglePlayInvite={() => {
+        void toggleMyPlayInvite();
+      }}
+      playInviteToggleDisabled={playInviteToggleBusy}
     >
       <AnimatePresence mode="wait">
         {activeTab === 'main' && (
@@ -1611,6 +2299,7 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
                 publicScreen={publicScreen}
                 setPublicScreen={setPublicScreen}
                 hundredRoomMetaByRoomId={hundredRoomMetaByRoomId}
+                hundredMissingRoomIds={hundredMissingRoomIds}
                 publicHundred={publicHundred}
                 publicMessages={publicMessages}
                 myPrivateMessages={myPrivateMessages.filter(isRenrakuEntryVisible)}
@@ -1621,13 +2310,15 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
                 userEmoji={userEmoji}
                 currentUid={currentUid}
                 isAdmin={isAdmin}
-                isBoardInteractionBlocked={isBlocked}
+                isBoardInteractionBlocked={isExcludedFromRakuda}
                 handleDelete={handleDelete}
                 handleBulkBlockAuthorPosts={handleBulkBlockAuthorPosts}
                 onTogglePostReaction={handleTogglePostReaction}
                 onToggleBoardPin={handleToggleBoardPin}
                 onJoinRoom={onJoinRoom}
+                onJoinBoardGameRecruit={onJoinBoardGameRecruit}
                 onStartHundred={startHundredPersistingRestore}
+                onJoinHundredRecruit={onJoinHundredRecruit}
                 streamMode={streamMode}
                 onCloseHundredRecruitment={async () => {
                   const roomId = selectedHundred?.roomId;
@@ -1646,13 +2337,18 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
                     console.error('[Renrakucho] onCloseHundredRecruitment', e);
                     return;
                   }
-                  navigateToSanjuuRecruitBoard();
+                  navigateToSanjuuRecruitBoard(selectedHundred?.hundredMode);
                 }}
                 onHundredGenerationCancelled={handleHundredGenerationCancelled}
                 hideSanjuuRecruitmentSection={isKeijibanPath}
-                hideBulletinBelowCreate={isHundredHubPath}
+                hideBulletinBelowCreate={hundredHubCreateFormOnly}
                 publicTimelineHydrated={publicTimelineHydrated}
+                boardTimelineTab={boardTimelineTab}
+                setBoardTimelineTab={setBoardTimelineTab}
                 ensureAuth={ensureAuth}
+                onIssueYellowCard={handleIssueYellowCard}
+                onIssueRedCard={handleIssueRedCard}
+                upsertPublicHundred={upsertPublicHundred}
               />
             </div>
             {!hidePostScreenFooter ? (
@@ -1664,12 +2360,15 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
               }
             >
               <PostScreen
-                isBlocked={isBlocked}
+                isExcludedFromRakuda={isExcludedFromRakuda}
+                yellowCardCount={myYellowCardCount}
                 message={message}
                 setMessage={setMessage}
                 handleSend={(mode) => void handleSend(mode)}
                 isSending={isSending}
                 sendCooldownUntilMs={sendCooldownUntilMs}
+                boardTimelineTab={boardTimelineTab}
+                isAdmin={isAdmin}
                 needsProfileSetup={!hasProfile}
                 onOpenProfileSetup={() => setShowProfileSetup(true)}
                 onRequestGoogleLogin={onRequestGoogleLogin}
@@ -1689,15 +2388,21 @@ const Renrakucho: React.FC<RenrakuchoProps> = ({
             onRequestGoogleLogin={onRequestGoogleLogin}
             boardMessages={boardMessages}
             recruitMessages={recruitMessages}
-            blockedUsers={blockedUsers}
             toggleRead={toggleRead}
             handleDelete={handleDelete}
-            handleBlock={handleBlock}
             handleBulkBlockAuthorPosts={handleBulkBlockAuthorPosts}
-            handleUnblock={handleUnblock}
+            moderatedUsers={adminModerationRows}
+            onIssueYellowCard={handleIssueYellowCard}
+            onIssueRedCard={handleIssueRedCard}
+            onClearRedCard={handleClearRedCard}
+            onClearAllCards={handleClearAllCards}
+            onRestoreAdminPublicPosts={() => void handleRestoreAdminPublicPosts()}
             renrakuReports={renrakuReports}
             adminReportsLoadState={adminReportsLoadState}
             onViewReportedPost={handleViewReportedPost}
+            onDismissReport={handleDismissReport}
+            streamMode={streamMode}
+            onSetStreamMode={setStreamMode}
             privateReplyByMessageId={privateReplyByMessageId}
             onSendPrivateReply={(messageId, text) => void handleSendPrivateReply(messageId, text)}
           />

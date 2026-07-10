@@ -1,17 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 export const usePwa = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showInstallGuideModal, setShowInstallGuideModal] = useState(false);
 
-  useEffect(() => {
-    const handleBeforeInstallPrompt = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-  }, []);
+  // beforeinstallprompt は preventDefault すると DevTools に警告が出る。
+  // カスタムの prompt() 導線（handleInstallClick）が UI に未配線のため、標準バナーに任せる。
 
   const handleInstallClick = async () => {
     if (deferredPrompt) {

@@ -1,5 +1,7 @@
 /** 盤面の列・行（正方形は cols === rows） */
 
+import { isPickupEmojiWordOnly, pickupEmojiGraphemeCount } from './pickupEmojiSymbols';
+
 export function resolveBoardCols(
   source: { boardCols?: number; boardSize?: number; grid?: string[][] } | undefined,
 ): number {
@@ -32,7 +34,10 @@ export function formatBoardDimensions(
 
 /** 探すことばが盤面に収まるか（横・縦のどちらかに載れば OK） */
 export function targetWordFitsBoard(targetWord: string, cols: number, rows: number): boolean {
-  const len = Array.from((targetWord || '').trim()).length;
+  const trimmed = (targetWord || '').trim();
+  const len = isPickupEmojiWordOnly(trimmed)
+    ? pickupEmojiGraphemeCount(trimmed)
+    : Array.from(trimmed).length;
   if (len <= 0) return false;
   return len <= cols || len <= rows;
 }

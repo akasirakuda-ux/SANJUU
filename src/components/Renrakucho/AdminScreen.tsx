@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Flag, Lock, Mail, MailOpen, Trash2, UserX, UserCheck } from 'lucide-react';
+import { Flag, Lock, Mail, MailOpen, Radio, Trash2 } from 'lucide-react';
 import RevenueSimulator from '../admin/RevenueSimulator';
 import GreenGateMemberList from '../admin/GreenGateMemberList';
+import GreenGatePassAdmin from '../admin/GreenGatePassAdmin';
 import ShussekiRankingList from '../admin/ShussekiRankingList';
 import { btnGhost } from '../../ui/policy';
 import RenrakuMessageBody from './RenrakuMessageBody';
@@ -22,11 +23,59 @@ import {
   resolveRenrakuPrivateReplyText,
   type RenrakuPrivateReplyPayload,
 } from '../../lib/rakudaHubShell';
-import type { AdminPrivateInboxLoadState, BlockedUser, Message } from './types';
+import type { AdminPrivateInboxLoadState, Message } from './types';
+import type { UserModerationRecord } from '../../lib/userModeration';
+import ModerationCardActions from './ModerationCardActions';
 
 /** 全角おおよそ10文字分まで省略しにくくする（長文は折り返し） */
 const nameChipClass =
   'text-xs font-medium text-rk-slate-800 bg-rk-white px-2 py-1 rounded-xl border border-rk-amber-200 break-words whitespace-normal max-w-[min(100%,28ch)]';
+
+type AdminSectionId =
+  | 'stream'
+  | 'reports'
+  | 'private'
+  | 'board'
+  | 'cards'
+  | 'revenue'
+  | 'greenMembers'
+  | 'greenPass'
+  | 'shusseki';
+
+const ADMIN_SECTION_META: { id: AdminSectionId; label: string }[] = [
+  { id: 'stream', label: '配信モード' },
+  { id: 'reports', label: '通報一覧' },
+  { id: 'private', label: 'らくだへの伝言' },
+  { id: 'board', label: '掲示板の投稿' },
+  { id: 'cards', label: 'イエロー／レッドカード' },
+  { id: 'revenue', label: '収益シミュレータ' },
+  { id: 'greenMembers', label: '緑ゲート会員' },
+  { id: 'greenPass', label: '感謝パス（緑）' },
+  { id: 'shusseki', label: 'しゅっせきランキング' },
+];
+
+function pickDefaultAdminSection(reportCount: number, unreadPrivateCount: number): AdminSectionId {
+  if (reportCount > 0) return 'reports';
+  if (unreadPrivateCount > 0) return 'private';
+  return 'stream';
+}
+
+function adminSectionLabel(
+  id: AdminSectionId,
+  counts: {
+    reportCount: number;
+    unreadPrivateCount: number;
+    boardCount: number;
+    cardUserCount: number;
+  },
+): string {
+  const base = ADMIN_SECTION_META.find((s) => s.id === id)?.label ?? id;
+  if (id === 'reports' && counts.reportCount > 0) return `${base}（${counts.reportCount}）`;
+  if (id === 'private' && counts.unreadPrivateCount > 0) return `${base}（未読${counts.unreadPrivateCount}）`;
+  if (id === 'board' && counts.boardCount > 0) return `${base}（${counts.boardCount}）`;
+  if (id === 'cards' && counts.cardUserCount > 0) return `${base}（${counts.cardUserCount}）`;
+  return base;
+}
 
 type AdminPublicItem = (Message & { type: 'community' | 'recruit' });
 
@@ -39,16 +88,23 @@ const AdminScreen: React.FC<{
   boardMessages: Message[];
   /** 募集（renraku_public type===recruit） */
   recruitMessages: Message[];
-  blockedUsers: BlockedUser[];
   toggleRead: (id: string, currentRead: boolean) => void | Promise<void>;
   handleDelete: (id: string, target: 'community' | 'recruit' | 'private') => void | Promise<void>;
-  handleBlock: (userId: string, userName: string) => void | Promise<void>;
-  /** 通報対応: 同一投稿者 uid の投稿を一括 blocked */
+  /** 通報対応: 同一投稿者 uid の投稿を一括 blocked（投稿非表示。利用停止はレッドカード） */
   handleBulkBlockAuthorPosts: (authorUid: string, authorName?: string) => void | Promise<void>;
-  handleUnblock: (userId: string) => void | Promise<void>;
+  moderatedUsers?: UserModerationRecord[];
+  onIssueYellowCard: (userId: string, userName: string) => void | Promise<void>;
+  onIssueRedCard: (userId: string, userName: string) => void | Promise<void>;
+  onClearRedCard: (userId: string) => void | Promise<void>;
+  onClearAllCards: (userId: string) => void | Promise<void>;
+  onRestoreAdminPublicPosts?: () => void | Promise<void>;
   renrakuReports?: RenrakuReportRecord[];
   adminReportsLoadState?: AdminPrivateInboxLoadState;
   onViewReportedPost?: (report: RenrakuReportRecord) => void;
+  /** 通報レコードのみ削除（投稿は残す） */
+  onDismissReport?: (reportId: string) => void | Promise<void>;
+  streamMode?: boolean;
+  onSetStreamMode?: (enabled: boolean) => void;
   privateReplyByMessageId: Record<string, RenrakuPrivateReplyPayload>;
   onSendPrivateReply: (messageId: string, text: string) => void | Promise<void>;
 }> = ({
@@ -58,15 +114,21 @@ const AdminScreen: React.FC<{
   onRequestGoogleLogin,
   boardMessages,
   recruitMessages,
-  blockedUsers,
   toggleRead,
   handleDelete,
-  handleBlock,
   handleBulkBlockAuthorPosts,
-  handleUnblock,
+  moderatedUsers = [],
+  onIssueYellowCard,
+  onIssueRedCard,
+  onClearRedCard,
+  onClearAllCards,
+  onRestoreAdminPublicPosts,
   renrakuReports = [],
   adminReportsLoadState = 'idle',
   onViewReportedPost,
+  onDismissReport,
+  streamMode = false,
+  onSetStreamMode,
   privateReplyByMessageId,
   onSendPrivateReply,
 }) => {
@@ -74,6 +136,13 @@ const AdminScreen: React.FC<{
   const [sendingById, setSendingById] = useState<Record<string, boolean>>({});
   const [replyStatusById, setReplyStatusById] = useState<Record<string, 'ok' | 'ng' | undefined>>({});
   const [reportActionBusyId, setReportActionBusyId] = useState<string | null>(null);
+  const unreadPrivateCount = useMemo(
+    () => privateMessages.filter((m) => !m.isRead).length,
+    [privateMessages],
+  );
+  const [adminSection, setAdminSection] = useState<AdminSectionId>(() =>
+    pickDefaultAdminSection(renrakuReports.length, privateMessages.filter((m) => !m.isRead).length),
+  );
 
   const initialDraftById = useMemo(() => {
     const next: Record<string, string> = {};
@@ -96,6 +165,16 @@ const AdminScreen: React.FC<{
     ];
     return merged.slice(0, 60);
   }, [boardMessages, recruitMessages]);
+
+  const sectionCounts = useMemo(
+    () => ({
+      reportCount: renrakuReports.length,
+      unreadPrivateCount,
+      boardCount: adminPublicItems.length,
+      cardUserCount: moderatedUsers.length,
+    }),
+    [adminPublicItems.length, moderatedUsers.length, renrakuReports.length, unreadPrivateCount],
+  );
 
   const sendReply = async (id: string) => {
     const text = String(getDraft(id) ?? '').trim();
@@ -122,14 +201,85 @@ const AdminScreen: React.FC<{
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="space-y-8 max-w-lg mx-auto pb-24 md:pb-28"
+      className="space-y-4 max-w-lg mx-auto pb-24 md:pb-28"
     >
-      <RevenueSimulator />
+      <div className="sticky top-0 z-20 -mx-1 px-1 pt-0.5 pb-2 bg-gradient-to-b from-rk-amber-50 via-rk-amber-50/95 to-transparent">
+        <label htmlFor="renraku-admin-section" className="block text-[10px] font-black uppercase tracking-widest text-rk-slate-500 mb-1.5">
+          管理メニュー
+        </label>
+        <select
+          id="renraku-admin-section"
+          value={adminSection}
+          onChange={(e) => setAdminSection(e.target.value as AdminSectionId)}
+          className="w-full rounded-xl border-2 border-rk-amber-300 bg-rk-white px-3 py-2.5 text-sm font-black text-rk-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-rk-amber-400/40"
+        >
+          {ADMIN_SECTION_META.map((item) => (
+            <option key={item.id} value={item.id}>
+              {adminSectionLabel(item.id, sectionCounts)}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1.5 text-[10px] font-bold text-rk-slate-500 leading-snug">
+          種類を選ぶと、その項目だけ表示します。
+        </p>
+      </div>
 
-      <GreenGateMemberList />
+      {adminSection === 'stream' ? (
+      <section className="rounded-xl border-2 border-rk-sky-300 bg-rk-sky-50/80 p-4 shadow-sm space-y-3">
+        <h3 className="text-sm font-black text-rk-slate-700 uppercase tracking-widest flex items-center gap-2">
+          <Radio size={16} className="text-rk-sky-600" /> 配信モード
+        </h3>
+        <p className="text-[11px] font-bold text-rk-slate-600 leading-relaxed">
+          YouTube LIVE など配信向けの軽量モードです。広告を止め、掲示板の更新間隔を長くして回線負荷を下げます。
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={!onSetStreamMode}
+            onClick={() => onSetStreamMode?.(true)}
+            className={`text-xs font-black px-4 py-2 rounded-xl border-2 transition-colors disabled:opacity-40 ${
+              streamMode
+                ? 'border-rk-sky-600 bg-rk-sky-600 text-rk-white shadow-md'
+                : 'border-rk-sky-300 bg-rk-white text-rk-sky-900 hover:bg-rk-sky-100'
+            }`}
+          >
+            ON（配信中）
+          </button>
+          <button
+            type="button"
+            disabled={!onSetStreamMode}
+            onClick={() => onSetStreamMode?.(false)}
+            className={`text-xs font-black px-4 py-2 rounded-xl border-2 transition-colors disabled:opacity-40 ${
+              !streamMode
+                ? 'border-rk-slate-600 bg-rk-slate-700 text-rk-white shadow-md'
+                : 'border-rk-slate-300 bg-rk-white text-rk-slate-700 hover:bg-rk-slate-100'
+            }`}
+          >
+            OFF（通常）
+          </button>
+        </div>
+        <p
+          className={`text-[10px] ${
+            streamMode ? 'font-black text-rk-red-600' : 'font-bold text-rk-slate-500'
+          }`}
+        >
+          現在: {streamMode ? 'ON — 広告OFF・軽量化' : 'OFF — 通常'}
+          {!onSetStreamMode ? (
+            <span className={streamMode ? 'font-bold text-rk-slate-600' : ''}>（切替不可）</span>
+          ) : null}
+        </p>
+      </section>
+      ) : null}
 
-      <ShussekiRankingList />
+      {adminSection === 'revenue' ? <RevenueSimulator /> : null}
 
+      {adminSection === 'greenMembers' ? <GreenGateMemberList /> : null}
+
+      {adminSection === 'greenPass' ? <GreenGatePassAdmin /> : null}
+
+      {adminSection === 'shusseki' ? <ShussekiRankingList /> : null}
+
+      {adminSection === 'reports' ? (
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <h3 className="text-sm font-black text-rk-slate-400 uppercase tracking-widest flex items-center gap-2 min-w-0">
@@ -201,6 +351,9 @@ const AdminScreen: React.FC<{
                   )}
                   <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[9px] font-bold text-rk-slate-500">
                     <span>通報者 UID: {report.reporterUid.slice(0, 12)}…</span>
+                    {report.targetAuthorUid ? (
+                      <span>投稿者 UID: {report.targetAuthorUid.slice(0, 12)}…</span>
+                    ) : null}
                     {report.pagePath ? <span>ページ: {report.pagePath}</span> : null}
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -229,15 +382,15 @@ const AdminScreen: React.FC<{
                               );
                               return;
                             }
-                            await handleBulkBlockAuthorPosts(authorUid, authorName);
+                            await onIssueRedCard(authorUid, authorName);
                           } finally {
                             setReportActionBusyId(null);
                           }
                         })();
                       }}
-                      className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-slate-300 bg-rk-white text-rk-slate-700 hover:bg-rk-slate-100 disabled:opacity-40"
+                      className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-rose-400 bg-rk-rose-50 text-rk-rose-900 hover:bg-rk-rose-100 disabled:opacity-40"
                     >
-                      投稿者をブロック
+                      🟥 レッドカード
                     </button>
                     <button
                       type="button"
@@ -247,7 +400,68 @@ const AdminScreen: React.FC<{
                         setReportActionBusyId(report.id);
                         void (async () => {
                           try {
-                            await handleDelete(report.targetId, renrakuReportDeleteTarget(report.targetType));
+                            const { authorUid, authorName } = await fetchRenrakuReportAuthor(report, targetMsg);
+                            if (!authorUid) {
+                              window.dispatchEvent(
+                                new CustomEvent('SHOW_TOAST', { detail: '投稿者を特定できませんでした' }),
+                              );
+                              return;
+                            }
+                            await onIssueYellowCard(authorUid, authorName);
+                          } finally {
+                            setReportActionBusyId(null);
+                          }
+                        })();
+                      }}
+                      className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-amber-400 bg-rk-amber-50 text-rk-amber-950 hover:bg-rk-amber-100 disabled:opacity-40"
+                    >
+                      🟨 イエローカード
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        if (busy) return;
+                        setReportActionBusyId(report.id);
+                        void (async () => {
+                          try {
+                            const { authorUid, authorName } = await fetchRenrakuReportAuthor(report, targetMsg);
+                            if (!authorUid) {
+                              window.dispatchEvent(
+                                new CustomEvent('SHOW_TOAST', { detail: '投稿者を特定できませんでした' }),
+                              );
+                              return;
+                            }
+                            await handleBulkBlockAuthorPosts(authorUid, authorName);
+                          } finally {
+                            setReportActionBusyId(null);
+                          }
+                        })();
+                      }}
+                      className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-slate-300 bg-rk-white text-rk-slate-700 hover:bg-rk-slate-100 disabled:opacity-40"
+                    >
+                      投稿を一括非表示
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        if (busy) return;
+                        setReportActionBusyId(report.id);
+                        void (async () => {
+                          try {
+                            const delTarget = renrakuReportDeleteTarget(report.targetType);
+                            if (delTarget === 'ouen') {
+                              await adminDeleteOuenReportTarget({
+                                targetType: report.targetType as 'ouen_note_topic' | 'ouen_note_comment',
+                                targetId: report.targetId,
+                              });
+                              window.dispatchEvent(
+                                new CustomEvent('SHOW_TOAST', { detail: '投稿を削除しました' }),
+                              );
+                            } else {
+                              await handleDelete(report.targetId, delTarget);
+                            }
                           } finally {
                             setReportActionBusyId(null);
                           }
@@ -257,6 +471,26 @@ const AdminScreen: React.FC<{
                     >
                       投稿を削除
                     </button>
+                    {onDismissReport ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          if (busy) return;
+                          setReportActionBusyId(report.id);
+                          void (async () => {
+                            try {
+                              await onDismissReport(report.id);
+                            } finally {
+                              setReportActionBusyId(null);
+                            }
+                          })();
+                        }}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-slate-400 bg-rk-slate-100 text-rk-slate-800 hover:bg-rk-slate-200 disabled:opacity-40"
+                      >
+                        通報を削除
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               );
@@ -264,7 +498,9 @@ const AdminScreen: React.FC<{
           </div>
         ) : null}
       </section>
+      ) : null}
 
+      {adminSection === 'private' ? (
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <h3 className="text-sm font-black text-rk-slate-400 uppercase tracking-widest flex items-center gap-2 min-w-0">
@@ -400,13 +636,15 @@ const AdminScreen: React.FC<{
 
                   <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-rk-red-200/50">
                     <span className="text-[10px] text-rk-slate-500 shrink-0">{formatFirestoreTimeJa(msg.createdAt)}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleBlock(msg.fromUserUid || msg.id, msg.fromUser)}
-                      className="text-[10px] font-bold text-rk-slate-700 hover:text-rk-rose-700 flex items-center gap-1 px-2 py-1 rounded-lg border border-rk-slate-200 bg-rk-white/90 hover:bg-rk-rose-50 shrink-0"
-                    >
-                      <UserX size={12} /> このユーザーをブロック
-                    </button>
+                    <div className="flex flex-col items-end gap-1.5">
+                      <ModerationCardActions
+                        userId={msg.fromUserUid}
+                        userName={msg.fromUser}
+                        onIssueYellowCard={onIssueYellowCard}
+                        onIssueRedCard={onIssueRedCard}
+                        compact
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -414,7 +652,9 @@ const AdminScreen: React.FC<{
           })
         ) : null}
       </section>
+      ) : null}
 
+      {adminSection === 'board' ? (
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-2">
           <h3 className="text-sm font-black text-rk-slate-400 uppercase tracking-widest flex items-center gap-2 min-w-0">
@@ -449,6 +689,14 @@ const AdminScreen: React.FC<{
                       <div className="mt-2 text-[10px] text-rk-slate-500">{formatFirestoreTimeJa((msg as any).createdAt)}</div>
                     </div>
                     <div className="shrink-0 flex flex-col items-end gap-1.5">
+                      <ModerationCardActions
+                        userId={msg.fromUserUid}
+                        userName={msg.fromUser}
+                        disabled={!canBlock}
+                        onIssueYellowCard={onIssueYellowCard}
+                        onIssueRedCard={onIssueRedCard}
+                        compact
+                      />
                       <button
                         type="button"
                         disabled={!canBlock}
@@ -458,7 +706,7 @@ const AdminScreen: React.FC<{
                         }}
                         className="text-[10px] font-bold px-2 py-1 rounded-lg border border-rk-slate-300 bg-rk-white text-rk-slate-700 hover:bg-rk-slate-100 disabled:opacity-40 disabled:pointer-events-none"
                       >
-                        ブロック
+                        一括非表示
                       </button>
                       <button
                         type="button"
@@ -476,50 +724,81 @@ const AdminScreen: React.FC<{
           </div>
         )}
       </section>
+      ) : null}
 
+      {adminSection === 'cards' ? (
       <section
-        className="scroll-mt-4 rounded-2xl border-2 border-rk-slate-500 bg-rk-neutral-100 p-4 shadow-lg ring-1 ring-rk-black/10"
-        aria-labelledby="admin-blocklist-heading"
+        className="scroll-mt-4 rounded-2xl border-2 border-rk-amber-400 bg-rk-amber-50/60 p-4 shadow-lg ring-1 ring-rk-black/5"
+        aria-labelledby="admin-cards-heading"
       >
         <div className="flex flex-wrap items-center gap-2 mb-1">
           <span className="text-2xl leading-none select-none" aria-hidden>
-            👤
+            🟨
           </span>
           <span className="text-2xl leading-none select-none" aria-hidden>
-            🚫
+            🟥
           </span>
-          <h3 id="admin-blocklist-heading" className="text-base font-black text-rk-gray-900 tracking-tight">
-            出禁リスト
+          <h3 id="admin-cards-heading" className="text-base font-black text-rk-gray-900 tracking-tight">
+            イエロー／レッドカード
           </h3>
         </div>
-        <p className="text-xs font-bold text-rk-gray-800 mb-4">掲示板からブロックした利用者がここに表示されます</p>
-        {blockedUsers.length === 0 ? (
-          <div className="text-center py-8 px-3 text-rk-gray-900 text-sm font-bold bg-rk-white rounded-xl border-2 border-rk-slate-400">
-            ブロック中のユーザーはいません
+        <p className="text-xs font-bold text-rk-gray-800 mb-4 leading-relaxed">
+          イエロー＝警告（投稿可）／レッド＝サイト全体の利用停止。レッドは管理タブから解除できます。
+        </p>
+        {onRestoreAdminPublicPosts ? (
+          <button
+            type="button"
+            onClick={() => void onRestoreAdminPublicPosts()}
+            className="mb-4 w-full text-[11px] font-black px-3 py-2 rounded-xl border-2 border-rk-sky-400 bg-rk-sky-50 text-rk-sky-950 hover:bg-rk-sky-100"
+          >
+            連絡事項（非表示・削除）を一括復元
+          </button>
+        ) : null}
+        {moderatedUsers.length === 0 ? (
+          <div className="text-center py-8 px-3 text-rk-gray-900 text-sm font-bold bg-rk-white rounded-xl border-2 border-rk-amber-300">
+            カード付与中の利用者はいません
           </div>
         ) : (
-          <div className="rounded-xl border-2 border-rk-slate-500 bg-rk-white overflow-hidden shadow-inner">
-            {blockedUsers.map((user) => (
+          <div className="rounded-xl border-2 border-rk-amber-400 bg-rk-white overflow-hidden shadow-inner">
+            {moderatedUsers.map((user) => (
               <div
                 key={user.id}
-                className="flex items-center justify-between gap-3 p-4 border-b border-rk-slate-200 last:border-b-0"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 border-b border-rk-amber-200 last:border-b-0"
               >
                 <div className="min-w-0">
-                  <p className="text-sm font-black text-rk-gray-900 break-words max-w-[min(100%,28ch)]">{user.userName}</p>
-                  <p className="text-[10px] text-rk-gray-700 font-medium mt-1">{formatFirestoreTimeJa(user.blockedAt)} にブロック</p>
+                  <p className="text-sm font-black text-rk-gray-900 break-words max-w-[min(100%,28ch)]">
+                    {user.userName}
+                  </p>
+                  <p className="text-[10px] text-rk-gray-700 font-medium mt-1">
+                    🟨 {user.yellowCount}枚
+                    {user.redActive ? ' ／ 🟥 レッド有効' : user.redCount > 0 ? ` ／ 🟥 累計${user.redCount}枚（解除済）` : ''}
+                    {user.updatedAt ? ` ・${formatFirestoreTimeJa(user.updatedAt)}` : ''}
+                  </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleUnblock(user.id)}
-                  className={`${btnGhost} flex items-center gap-1 shrink-0 text-rk-gray-900 border-rk-slate-400`}
-                >
-                  <UserCheck size={14} /> 解除
-                </button>
+                <div className="flex flex-wrap gap-2 shrink-0">
+                  {user.redActive ? (
+                    <button
+                      type="button"
+                      onClick={() => void onClearRedCard(user.id)}
+                      className={`${btnGhost} text-rk-gray-900 border-rk-rose-300 text-[11px]`}
+                    >
+                      レッド解除
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void onClearAllCards(user.id)}
+                    className={`${btnGhost} text-rk-gray-900 border-rk-amber-400 text-[11px]`}
+                  >
+                    カードリセット
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         )}
       </section>
+      ) : null}
     </motion.div>
   );
 };

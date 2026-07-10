@@ -11,22 +11,22 @@ const HundredProblemGeneratingOverlay: React.FC<{
 
   const node = (
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-emerald-900/50 backdrop-blur-sm p-4 pointer-events-auto"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-rk-success-900/50 backdrop-blur-sm p-4 pointer-events-auto"
       role="dialog"
       aria-modal="true"
       aria-busy="true"
       aria-label="問題を作成しています"
     >
-      <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-3 border-4 border-emerald-100 max-w-sm w-full">
-        <div className="w-14 h-14 border-8 border-emerald-100 border-t-emerald-500 rounded-full animate-spin shrink-0" />
-        <p className="font-black text-slate-800 text-lg text-center leading-snug">
+      <div className="bg-rk-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-3 border-4 border-rk-success-100 max-w-sm w-full">
+        <div className="w-14 h-14 border-8 border-rk-success-100 border-t-rk-success-500 rounded-full animate-spin shrink-0" />
+        <p className="font-black text-rk-slate-800 text-lg text-center leading-snug">
           問題を作っています。しばらくお待ちください
         </p>
         {onCancel ? (
           <button
             type="button"
             onClick={onCancel}
-            className="mt-1 w-full max-w-[280px] py-3 px-4 rounded-xl text-sm font-bold text-slate-700 bg-gray-200 hover:bg-gray-300 border-2 border-slate-400/90 shadow-md ring-2 ring-slate-300/80 active:scale-[0.99] transition-colors"
+            className="mt-1 w-full max-w-[280px] py-3 px-4 rounded-xl text-sm font-bold text-rk-slate-700 bg-rk-gray-200 hover:bg-rk-gray-300 border-2 border-rk-slate-400/90 shadow-md ring-2 ring-rk-slate-300/80 active:scale-[0.99] transition-colors"
           >
             キャンセルして戻る
           </button>

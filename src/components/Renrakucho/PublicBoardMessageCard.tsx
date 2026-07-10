@@ -9,6 +9,7 @@ import RenrakuMessageBody from './RenrakuMessageBody';
 import RenrakuCopyTextButton from './RenrakuCopyTextButton';
 import { RK_GATE_NICK_DISPLAY_CLASS } from '../../lib/rakudaGate';
 import { renrakuBoardPostElementId } from '../../lib/renrakuReport';
+import { isPublicMessageAnnouncement } from '../../lib/renrakuBoardPostKind';
 
 export type PublicBoardMessageCardProps = {
   msg: Message;
@@ -49,14 +50,24 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
 
   const likedByMe = currentUid ? reactions.some((r) => r.uid === currentUid) : false;
   const isMine = !!currentUid && currentUid === (msg as any).fromUserUid;
+  const isAnnouncement = isPublicMessageAnnouncement(msg);
 
   return (
     <div
       id={renrakuBoardPostElementId(msg.id)}
       className={`scroll-mt-4 bg-rk-white rounded-xl p-3 shadow-sm border relative group ${
-        msg.pinned ? 'border-rk-amber-300 ring-1 ring-rk-amber-100' : 'border-rk-slate-200'
+        isAnnouncement
+          ? 'border-rk-sky-300 ring-1 ring-rk-sky-100'
+          : msg.pinned
+            ? 'border-rk-amber-300 ring-1 ring-rk-amber-100'
+            : 'border-rk-slate-200'
       }`}
     >
+      {isAnnouncement ? (
+        <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-rk-sky-800">
+          📢 らくだ珈琲からの連絡
+        </div>
+      ) : null}
       <div className="flex gap-2 items-start mb-2">
         <span className="text-xl leading-none shrink-0" aria-hidden>
           {msg.fromUserEmoji || '💬'}
@@ -97,6 +108,7 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
               targetType="public_messages"
               targetId={msg.id}
               authorUid={msg.fromUserUid}
+              authorName={msg.fromUser}
               reporterUid={currentUid}
               interactionBlocked={isInteractionBlocked}
             />
@@ -129,7 +141,7 @@ const PublicBoardMessageCard: React.FC<PublicBoardMessageCardProps> = ({
               <button
                 type="button"
                 onClick={onDelete}
-                disabled={isInteractionBlocked || (msg as any).pinned === true}
+                disabled={isInteractionBlocked || (msg as any).pinned === true || isAnnouncement}
                 className="px-2 py-1 rounded-lg border border-rk-rose-200 text-rk-rose-700 bg-rk-rose-50 hover:bg-rk-rose-100 disabled:opacity-40 disabled:pointer-events-none"
               >
                 削除

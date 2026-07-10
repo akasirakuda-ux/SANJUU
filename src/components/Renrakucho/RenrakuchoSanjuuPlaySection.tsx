@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { sanjuuHttpApiOrigin, sanjuuWebOrigin } from '../../lib/sanjuuWebOrigin';
-import SanjuuBrandHeading from '../SanjuuBrandHeading';
+import { sanjuuHttpApiOrigin, sanjuuWebOrigin } from '../../lib/rakudaHubShell';
 
 export type SanjuuPlayRoomListing = {
   roomId: number;
@@ -113,42 +112,50 @@ const RenrakuchoSanjuuPlaySection: React.FC = () => {
 
   return (
     <section
-      className="mb-4 space-y-3 rounded-xl border-2 border-sky-400/40 bg-gradient-to-b from-sky-50 to-white px-3 py-4 shadow-sm"
+      className="mb-4 space-y-3 rounded-xl border-2 border-rk-sky-400/40 bg-gradient-to-b from-rk-sky-50 to-rk-white px-3 py-4 shadow-sm"
       aria-labelledby="sanjuu-play-section-title"
     >
-      <div id="sanjuu-play-section-title">
-        <SanjuuBrandHeading as="h2" />
-      </div>
-      <p className="text-center text-[13px] font-black uppercase tracking-widest text-sky-800/90">募集中のあそび</p>
+      <h2
+        id="sanjuu-play-section-title"
+        className="text-center text-xl sm:text-2xl font-black text-rk-sky-950 tracking-tight font-[family-name:var(--font-rounded)]"
+      >
+        ひと言探し
+      </h2>
+      <p className="text-center text-[11px] font-bold text-rk-slate-500">【ひと言探し】ひらがな900マス</p>
+
       <div className="flex justify-center">
         <button
           type="button"
           disabled={recruitBusy}
           onClick={() => void recruit()}
-          className="rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-black text-white shadow-sm transition-transform active:scale-[0.99] disabled:opacity-50"
+          className="rounded-xl bg-rk-blue-500 px-4 py-2.5 text-sm font-black text-rk-white shadow-sm transition-transform active:scale-[0.99] disabled:opacity-50"
         >
           あそびを募集する
         </button>
       </div>
       {recruiting.length === 0 ? (
-        <p className="text-center text-xs font-bold text-slate-600">いま募集中の部屋はありません。</p>
+        <p className="text-center text-xs font-bold text-rk-slate-600">いま募集中の部屋はありません。</p>
       ) : (
         <ul className="space-y-2">
           {recruiting.map((room) => (
             <li key={room.roomId}>
-              <button
-                type="button"
-                onClick={() => goPlay(room.roomId)}
-                className="w-full rounded-xl border border-sky-200 bg-white px-3 py-3 text-left shadow-sm transition-transform active:scale-[0.99]"
-              >
-                <p className="text-base font-black text-slate-900">『{room.embedWord}』をさがせ！</p>
-                <p className="mt-1 text-xs font-bold text-slate-600">
-                  ルーム {String(room.roomId)} ／ 参加 {room.clientsCount} / 30 にん
-                </p>
-                <span className="mt-2 inline-block rounded-lg border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] font-black text-sky-900">
-                  この募集に参加する
-                </span>
-              </button>
+              <div className="flex gap-3 rounded-xl border border-rk-sky-200 bg-rk-white shadow-sm items-stretch min-h-[4.5rem]">
+                <div className="min-w-0 flex-1 py-3 pl-3 pr-1 flex flex-col justify-center">
+                  <p className="text-base font-black text-rk-slate-900 leading-snug">『{room.embedWord}』をさがせ！</p>
+                  <p className="mt-1 text-xs font-bold text-rk-slate-600">
+                    ルーム {String(room.roomId)} ／ 参加 {room.clientsCount} / 30 にん
+                  </p>
+                </div>
+                <div className="flex flex-col justify-center gap-2 shrink-0 py-3 pr-3 pl-3 border-l border-rk-sky-100">
+                  <button
+                    type="button"
+                    onClick={() => goPlay(room.roomId)}
+                    className="rounded-lg border border-rk-sky-400 bg-rk-sky-50 px-3 py-2 text-[12px] font-black text-rk-sky-900 whitespace-nowrap shadow-sm transition-transform active:scale-[0.98]"
+                  >
+                    参加
+                  </button>
+                </div>
+              </div>
             </li>
           ))}
         </ul>

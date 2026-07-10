@@ -1,7 +1,6 @@
 import React, { useCallback } from 'react';
 import type { HundredPublicRecruit, HundredRoomListMeta, RenrakuchoPublicScreenState } from './types';
 import HundredDetailPanel from './hundred/HundredDetailPanel';
-import HundredWaitPanel from './hundred/HundredWaitPanel';
 import HundredBoardPanel from './hundred/HundredBoardPanel';
 
 const HundredFlow: React.FC<{
@@ -11,7 +10,8 @@ const HundredFlow: React.FC<{
   userEmoji: string;
   currentUid: string | undefined;
   setPublicScreen: React.Dispatch<React.SetStateAction<RenrakuchoPublicScreenState>>;
-  onStartHundred: (roomId: string) => void;
+  onStartHundred: (roomId: string, opts?: { hundredMode?: string }) => void | Promise<void>;
+  onJoinHundredRecruit?: (recruit: HundredPublicRecruit) => void;
   /** 配信/低負荷モード（YouTube Live 安定化用） */
   streamMode?: boolean;
   onCloseHundredRecruitment: () => void | Promise<void>;
@@ -22,11 +22,10 @@ const HundredFlow: React.FC<{
 }> = ({
   publicScreen,
   selectedHundred,
-  nickname,
-  userEmoji,
   currentUid,
   setPublicScreen,
   onStartHundred,
+  onJoinHundredRecruit,
   streamMode = false,
   onCloseHundredRecruitment,
   onHundredGenerationCancelled,
@@ -37,6 +36,15 @@ const HundredFlow: React.FC<{
     setPublicScreen('closed');
   }, [setPublicScreen]);
 
+  const handleJoinRecruit = useCallback(() => {
+    if (!selectedHundred) return;
+    if (onJoinHundredRecruit) {
+      onJoinHundredRecruit(selectedHundred);
+      return;
+    }
+    setPublicScreen('hundred-wait');
+  }, [onJoinHundredRecruit, selectedHundred, setPublicScreen]);
+
   return (
     <>
       {publicScreen === 'hundred-detail' && selectedHundred && (
@@ -46,24 +54,10 @@ const HundredFlow: React.FC<{
           roomMeta={selectedHundred.roomId ? hundredRoomMetaByRoomId[selectedHundred.roomId] : undefined}
           nowMs={nowMs}
           onBack={() => setPublicScreen('list')}
-          onGoWait={() => setPublicScreen('hundred-wait')}
+          onGoWait={handleJoinRecruit}
           onGoBoard={() => setPublicScreen('hundred-board')}
           onCloseHundredRecruitment={onCloseHundredRecruitment}
           onGuestRecruitmentClosed={onGuestRecruitmentClosed}
-        />
-      )}
-
-      {publicScreen === 'hundred-wait' && selectedHundred && (
-        <HundredWaitPanel
-          selectedHundred={selectedHundred}
-          nickname={nickname}
-          userEmoji={userEmoji}
-          currentUid={currentUid}
-          streamMode={streamMode}
-          onBack={() => setPublicScreen('list')}
-          onStartHundred={onStartHundred}
-          onGenerationCancelled={onHundredGenerationCancelled}
-          onCloseRecruitment={onCloseHundredRecruitment}
         />
       )}
 

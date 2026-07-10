@@ -14,7 +14,7 @@
  * 3. `src/components/AppRouter.tsx` に **描画分岐**と遷移（必要なら `history.pushState`）を足す。
  * 4. `useAppShell` / `GlobalOverlays` で干渉がないか確認する（没入・広告は **本ファイルから import した** `closesGlobalOverlays` 等と `immersiveScreenPolicy` 先頭コメント）。
  *
- * ### スタンプ・出席（しゅっせき）
+ * ### スタンプ・出席（しゅっせき）— 1日1スタンプ（回数の数字表示なし）
  *
  * UI は {@link StampCard}、ログからの再計算は `computeStampsFromLogs` / `migrateStampArrays`（実装体は `stampMigration.ts`、**import は本ファイル経由**で揃える）。
  * `UserAccount` 上のフィールド型は {@link RakudaShussekiState}。シェル側の実行箇所は `useAppShell` のマイグレーション effect。
@@ -92,6 +92,10 @@ export {
   sanjuuBulletinBoardUrl,
   sanjuuHttpApiOrigin,
   sanjuuRecruitBoardUrlWithRakudaProfile,
+  sanjuuRecruitBoardUrlForHundredRecruit,
+  sanjuuTileMatchRecruitBoardUrlWithRakudaProfile,
+  rakudaTileMatchCreateUrlWithRakudaProfile,
+  rakudaTileMatchSoloPlayUrl,
   sanjuuTopUrlWithRakudaProfile,
   sanjuuWebOrigin,
 } from './sanjuuWebOrigin';
@@ -119,7 +123,14 @@ export {
 } from './shussekiDailyClears';
 
 /** ニックのなりすまし防止（連絡帳・表示名まわりのシェル判定） */
-export { rakudaNicknameImpersonationMessage } from './rakudaDisplayNamePolicy';
+export {
+  RAKUDA_OFFICIAL_DISPLAY_EMOJI,
+  RAKUDA_OFFICIAL_DISPLAY_NICKNAME,
+  getRakudaDisplayNameValidationError,
+  rakudaDisplayNameProhibitedWordMessage,
+  rakudaEmojiImpersonationMessage,
+  rakudaNicknameImpersonationMessage,
+} from './rakudaDisplayNamePolicy';
 
 /** `:root` の `--rk-*` を実行時に解決（canvas / QR 等） */
 export {
@@ -139,11 +150,17 @@ export {
   firestoreLikeToMillis,
   formatFirestoreTimeJa,
   hundredDisplayDeadlineMs,
+  hundredRecruitHasOpenDeadline,
+  isHundredBetweenRounds,
+  isHundredOpenRecruitDeadline,
+  isHundredOpenRecruitSessionEnded,
   normalizeHundredGameTimeLimitSec,
   shouldHideFromPublicListAfterRecruitDeadlineGrace,
   shouldHideFromSanjuuRecruitBoard,
   shouldHideHundredPublicFromListAfterGrace,
   shouldHideHundredPublicFromListItem,
+  isHundredRoomInPlay,
+  isHundredRoomInPlayOrStarting,
   type FirestoreTimeInput,
   type HundredRoomListMeta,
 } from './firestoreTime';
@@ -169,7 +186,13 @@ export {
 export { showAppToast } from './appToast';
 
 /** 右上ログイン表示（`authLoginDisplay.ts`） */
-export { getAuthLoginDisplay, type AuthLoginDisplay, type AuthLoginTone } from './authLoginDisplay';
+export {
+  getAuthLoginDisplay,
+  googleLoginActionLabelJa,
+  resolveAuthUserForLoginDisplay,
+  type AuthLoginDisplay,
+  type AuthLoginTone,
+} from './authLoginDisplay';
 
 /** 連絡帳・管理者（`renrakuAdmin.ts`） */
 export {
@@ -192,6 +215,7 @@ export {
 export {
   RENRAKU_POST_CLIENT_VALIDATION_DISABLED,
   RENRAKU_VALIDATION_ERROR_MESSAGE,
+  getRenrakuPostValidationError,
   validateRenrakuPost,
 } from './renrakuContentValidation';
 
@@ -235,8 +259,8 @@ export {
   expectsGoogleSession,
   getGoogleSessionUid,
   isGoogleLoginPending,
-  isGoogleSignedInUser,
   markGoogleLoginPending,
+  isGoogleSignedInUser,
   markGoogleSessionUid,
   pickEffectiveAuthUser,
   waitForAnyGoogleUser,

@@ -24,6 +24,7 @@ function createBlankUser(): UserAccount {
     addOns: [],
     completedDates: [],
     specialDates: [],
+    dailyClearCounts: {},
   };
 }
 
@@ -64,6 +65,7 @@ export const useUser = () => {
       const addOns = parsed.addOns || [];
       const completedDates = parsed.completedDates || [];
       const specialDates = parsed.specialDates || [];
+      const dailyClearCounts = parsed.dailyClearCounts || {};
       const migrated: UserAccount = {
         ...parsed,
         user_id,
@@ -75,6 +77,7 @@ export const useUser = () => {
         addOns,
         completedDates,
         specialDates,
+        dailyClearCounts,
       };
       try {
         localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify([migrated]));

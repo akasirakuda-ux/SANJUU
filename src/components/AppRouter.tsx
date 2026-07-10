@@ -3,25 +3,40 @@ import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react
 import SeatSelection from '../pages/SeatSelection';
 import SelectScreen from './SelectScreen';
 import GameNarrator from './GameNarrator';
-import { MASTER } from '../constants';
+import { MASTER, isWordCategoryPaused } from '../constants';
 import { vibrate } from '../lib/utils';
 import { audioService } from '../services/audioService';
 import type { ScreenType, UserAccount, LogEntry } from '../types';
 
+import { saveHundredRestoreForRoom } from '../lib/hundredRejoin';
+import { clearHundredRestoreSession } from '../lib/rakudaHundredRestore';
 import {
   getRakudaScreenMeta,
-  sanjuuRecruitBoardUrlWithRakudaProfile,
+  sanjuuRecruitBoardUrlForHundredRecruit,
   type QuietImmersiveHistoryKind,
   usesQuietImmersiveHistoryScreen,
 } from '../lib/rakudaHubShell';
 import { lazyWithReload } from '../lib/lazyWithReload';
 import { markSocialPlayAdSessionActive } from '../lib/socialPlayAdSession';
 import HundredRecruitNewPopup from './HundredRecruitNewPopup';
+import GomokuTrialPopup from './GomokuTrialPopup';
+import RelayStoryTrialPopup from './RelayStoryTrialPopup';
+import { markGomokuTrialPopupDismissed, shouldShowGomokuTrialPopup } from '../lib/gomokuTrialPopup';
+import {
+  markRelayStoryTrialPopupDismissed,
+  shouldShowRelayStoryTrialPopup,
+} from '../lib/relayStoryTrialPopup';
+import { checkOuenNoteAccess, ouenNoteAccessDeniedMessage } from '../lib/ouenNoteGate';
+import { isRenrakuAdmin } from '../lib/renrakuAdmin';
 
 const GameScreen = lazyWithReload(() => import('./GameScreen'));
 const QuietRoom = lazyWithReload(() => import('./QuietRoom'));
 const SlidePuzzleGame = lazyWithReload(() => import('../games/slide-puzzle/SlidePuzzleGame'));
 const OthelloGame = lazyWithReload(() => import('../games/othello/OthelloGame'));
+const GomokuGame = lazyWithReload(() => import('../games/gomoku/GomokuGame'));
+const RelayStoryScreen = lazyWithReload(() => import('../games/relay-story/RelayStoryScreen'));
+const OuenNoteScreen = lazyWithReload(() => import('../components/OuenNote/OuenNoteScreen'));
+const SudokuGame = lazyWithReload(() => import('../games/sudoku/SudokuGame'));
 
 function RakudaRouteFallback() {
   return (
@@ -97,6 +112,8 @@ interface AppRouterProps {
   isOnline: boolean;
   tryInterstitialAtNaturalBreak: () => Promise<void>;
   tryInterstitialAtSocialSessionEnd: () => Promise<void>;
+  tryInterstitialAtHundredPickupClear: () => Promise<void>;
+  tryInterstitialAtSudokuClear: () => Promise<void>;
   handleClear: () => void;
   narration: string;
   difficulty: number;
@@ -105,11 +122,16 @@ interface AppRouterProps {
   setShowRenrakucho: (show: boolean) => void;
   onUpdateFound: (word: string, start: any, end: any, isHint?: boolean) => void;
   syncFromHundredRooms: boolean;
-  hundredRoster: { uid: string; name: string; emoji: string; foundCount: number }[];
+  hundredRoster: import('../lib/hundredPlayerPresence').HundredRosterPlayer[];
   /** hundred_rooms.hostUid（みんなであそぶでホストがゲーム画面を離れるときの確認用） */
   hundredRoomHostUid: string | null;
+  /** 現行お題の開始（ロボ常設の参加者フィルタ用） */
+  hundredRoomStartedAt?: unknown;
+  hundredRoomLastFoundAt?: unknown;
+  hundredRoomUpdatedAt?: unknown;
   onHundredRoomFinished: (reason: 'timeout' | 'cleared') => void | Promise<void>;
   onRakudaRoboReplay?: () => Promise<boolean>;
+  onRoboPickupLoungeAutoRefresh?: () => void | Promise<void>;
   ensureAuth: () => Promise<void>;
   hasActiveRecruitments: boolean;
   /** トップハブ: hundred_public に最終閲覧より新しい募集がある */
@@ -119,7 +141,17 @@ interface AppRouterProps {
   reversiRecruitHasOpen?: boolean;
   /** トップハブ: 自分のリバーシ募集が待機中 */
   reversiRecruitHostWaiting?: boolean;
+  /** トップハブ: 参加可能な五目並べ募集がある */
+  gomokuRecruitHasOpen?: boolean;
+  /** トップハブ: 自分の五目並べ募集が待機中 */
+  gomokuRecruitHostWaiting?: boolean;
   viewerCount?: number;
+  /** トップハブ: いまここにいる人（絵文字のみ・らくだロボ除く） */
+  hubPresencePeers?: readonly import('../hooks/usePresence').HubPresencePeer[];
+  /** トップハブ: 累計来場者数 */
+  hubVisitorTotal?: number;
+  greenGateActive?: boolean;
+  shussekiRegular?: boolean;
   userEmoji: string;
   setUserEmoji: (emoji: string) => void;
   onCancelRecruit: () => Promise<void>;
@@ -132,6 +164,8 @@ interface AppRouterProps {
   onOpenRenrakuchoAdmin: () => Promise<void>;
   /** メインハブ「みんなであそぶ（連絡帳）」未読バッジ */
   renrakuchoHasUnread?: boolean;
+  /** メインハブ「ちょっと誰かに…」未読バッジ */
+  ouenNoteHasUnread?: boolean;
   /** ローカル複数アカウント（ハブ右上の切替用） */
   accounts: UserAccount[];
   activeUserId: string;
@@ -139,6 +173,12 @@ interface AppRouterProps {
   createAccount: () => string;
   /** 配信モード（軽量化） */
   streamMode?: boolean;
+  /** 盤面の座標表示（配信モードと別） */
+  coordOverlayEnabled?: boolean;
+  /** 管理者・配信モード時のひと言探し「配信中」バッジ切替UI */
+  adminStreamLiveBadgeControl?: boolean;
+  streamLiveBadgeEnabled?: boolean;
+  setStreamLiveBadgeEnabled?: (enabled: boolean) => void;
   /** 連絡帳オーバーを表示中（席画面が裏に残っていても募集 API を叩かない） */
   showRenrakucho?: boolean;
   logs: LogEntry[];
@@ -149,8 +189,14 @@ interface AppRouterProps {
     details?: unknown,
     emoji?: string,
   ) => void;
-  /** ゲームプレイ1回分のしゅっせき簿加算（本日の枚数を返す） */
+  /** しゅっせき簿：その日初めて遊んだとき 1、同じ日の2回目以降 0 */
   recordShussekiGamePlay: () => number;
+  setSyncFromHundredRooms?: (v: boolean) => void;
+  leaveCurrentHundredRoom?: () => Promise<void>;
+  hundredWaitHeadlessState?: import('../lib/hundredWaitHeadless').HundredWaitHeadlessState | null;
+  onHundredHostStart?: () => void;
+  onHundredJoinRetry?: () => void;
+  endHundredWaitSession?: () => void;
 }
 
 const AppRouter: React.FC<AppRouterProps> = ({
@@ -204,6 +250,8 @@ const AppRouter: React.FC<AppRouterProps> = ({
   isOnline,
   tryInterstitialAtNaturalBreak,
   tryInterstitialAtSocialSessionEnd,
+  tryInterstitialAtHundredPickupClear,
+  tryInterstitialAtSudokuClear,
   handleClear,
   narration,
   difficulty,
@@ -214,15 +262,25 @@ const AppRouter: React.FC<AppRouterProps> = ({
   syncFromHundredRooms,
   hundredRoster,
   hundredRoomHostUid,
+  hundredRoomStartedAt,
+  hundredRoomLastFoundAt,
+  hundredRoomUpdatedAt,
   onHundredRoomFinished,
   onRakudaRoboReplay,
+  onRoboPickupLoungeAutoRefresh,
   ensureAuth,
   hasActiveRecruitments,
   hundredRecruitHasNew = false,
   markHundredRecruitSeen,
   reversiRecruitHasOpen = false,
   reversiRecruitHostWaiting = false,
+  gomokuRecruitHasOpen = false,
+  gomokuRecruitHostWaiting = false,
   viewerCount,
+  hubPresencePeers,
+  hubVisitorTotal,
+  greenGateActive = false,
+  shussekiRegular = false,
   userEmoji,
   setUserEmoji,
   onCancelRecruit,
@@ -234,23 +292,43 @@ const AppRouter: React.FC<AppRouterProps> = ({
   onOpenHundredHub,
   onOpenRenrakuchoAdmin,
   renrakuchoHasUnread,
+  ouenNoteHasUnread,
   accounts,
   activeUserId,
   switchAccount,
   createAccount,
   streamMode = false,
+  coordOverlayEnabled = false,
+  adminStreamLiveBadgeControl = false,
+  streamLiveBadgeEnabled = false,
+  setStreamLiveBadgeEnabled,
   showRenrakucho = false,
   logs,
   addLog,
   recordShussekiGamePlay,
+  setSyncFromHundredRooms,
+  leaveCurrentHundredRoom,
+  hundredWaitHeadlessState = null,
+  onHundredHostStart,
+  onHundredJoinRetry,
+  endHundredWaitSession,
 }) => {
   const [quietSkipIntro, setQuietSkipIntro] = useState(false);
   const [showNewRecruitPopup, setShowNewRecruitPopup] = useState(false);
+  const [showGomokuTrialPopup, setShowGomokuTrialPopup] = useState(false);
+  const [showRelayStoryTrialPopup, setShowRelayStoryTrialPopup] = useState(false);
   const quietImmersivePopRef = useRef(false);
 
+  const suppressHundredRecruitPopup =
+    screen === 'game' && isSyncMode && !!roomId && syncFromHundredRooms;
+
   useEffect(() => {
+    if (suppressHundredRecruitPopup) {
+      setShowNewRecruitPopup(false);
+      return;
+    }
     if (hundredRecruitHasNew) setShowNewRecruitPopup(true);
-  }, [hundredRecruitHasNew]);
+  }, [hundredRecruitHasNew, suppressHundredRecruitPopup]);
 
   /** ひと言探しマルチ・三十協力 — 対人セッション中は途中広告を抑止 */
   useEffect(() => {
@@ -264,6 +342,75 @@ const AppRouter: React.FC<AppRouterProps> = ({
     markHundredRecruitSeen?.();
     setShowNewRecruitPopup(false);
   }, [markHundredRecruitSeen]);
+
+  const dismissGomokuTrialPopup = useCallback(() => {
+    markGomokuTrialPopupDismissed();
+    setShowGomokuTrialPopup(false);
+  }, []);
+
+  const dismissRelayStoryTrialPopup = useCallback(() => {
+    markRelayStoryTrialPopupDismissed();
+    setShowRelayStoryTrialPopup(false);
+  }, []);
+
+  const openGomokuFromHub = useCallback(() => {
+    vibrate(10);
+    pushQuietImmersiveHistory('gomoku');
+    setScreen('gomoku');
+  }, [setScreen]);
+
+  const openRelayStoryFromHub = useCallback(() => {
+    vibrate(10);
+    pushQuietImmersiveHistory('relay-story');
+    setScreen('relay-story');
+  }, [setScreen]);
+
+  const openOuenNoteFromHub = useCallback(() => {
+    const access = checkOuenNoteAccess({
+      firebaseUser: firebaseUser ?? null,
+      shusseki: {
+        completedDates: user.completedDates,
+        specialDates: user.specialDates,
+        dailyClearCounts: user.dailyClearCounts,
+      },
+      isAdmin: isRenrakuAdmin(firebaseUser ?? null),
+    });
+    if (!access.ok) {
+      window.dispatchEvent(
+        new CustomEvent('SHOW_TOAST', {
+          detail: ouenNoteAccessDeniedMessage(access.reason),
+        }),
+      );
+      return;
+    }
+    vibrate(10);
+    pushQuietImmersiveHistory('ouen-note');
+    setScreen('ouen-note');
+  }, [firebaseUser, setScreen, user.completedDates, user.specialDates, user.dailyClearCounts]);
+
+  useEffect(() => {
+    if (screen !== 'seat-selection' || showNewRecruitPopup) return;
+    if (!shouldShowGomokuTrialPopup()) return;
+    setShowGomokuTrialPopup(true);
+  }, [screen, showNewRecruitPopup]);
+
+  useEffect(() => {
+    if (screen !== 'seat-selection' || showNewRecruitPopup || showGomokuTrialPopup) return;
+    if (!shouldShowRelayStoryTrialPopup()) return;
+    setShowRelayStoryTrialPopup(true);
+  }, [screen, showNewRecruitPopup, showGomokuTrialPopup]);
+
+  const tryGomokuFromTrialPopup = useCallback(() => {
+    markGomokuTrialPopupDismissed();
+    setShowGomokuTrialPopup(false);
+    openGomokuFromHub();
+  }, [openGomokuFromHub]);
+
+  const tryRelayStoryFromTrialPopup = useCallback(() => {
+    markRelayStoryTrialPopupDismissed();
+    setShowRelayStoryTrialPopup(false);
+    openRelayStoryFromHub();
+  }, [openRelayStoryFromHub]);
 
   useEffect(() => {
     const onPop = () => {
@@ -299,18 +446,66 @@ const AppRouter: React.FC<AppRouterProps> = ({
     return () => globalThis.clearTimeout(timeoutHandle);
   }, [screen]);
 
+  /** ひと言探し共同: 一旦退室して募集へ（再参加可） */
+  const exitHundredPlayToHub = useCallback(
+    async (playRoomId: string | null) => {
+      vibrate(10);
+      if (playRoomId) {
+        await leaveCurrentHundredRoom?.();
+        await saveHundredRestoreForRoom(playRoomId);
+      }
+      endHundredWaitSession?.();
+      setRoomId(null);
+      setSyncFromHundredRooms?.(false);
+      setSeed('');
+      setScreen('select');
+      await onOpenHundredHub({ focusCreateForm: false });
+    },
+    [
+      leaveCurrentHundredRoom,
+      endHundredWaitSession,
+      setRoomId,
+      setSyncFromHundredRooms,
+      setSeed,
+      setScreen,
+      onOpenHundredHub,
+    ]
+  );
+
   const handleBackToTitle = useCallback(() => {
     vibrate(10);
-    setClearsCount(0);
-    setIsMultiplay(false);
-    setIsSyncMode(false);
-    setSeed('');
-    setRoomId(null);
-    setIsReady(false);
-    setIsRoomCreator(false);
-    onCancelRecruit();
-    setScreen('seat-selection');
-  }, [setScreen, setClearsCount, setIsMultiplay, setIsSyncMode, setSeed, setRoomId, setIsReady, setIsRoomCreator, onCancelRecruit]);
+    void (async () => {
+      if (syncFromHundredRooms && roomId) {
+        await leaveCurrentHundredRoom?.();
+      }
+      endHundredWaitSession?.();
+      clearHundredRestoreSession();
+      setClearsCount(0);
+      setIsMultiplay(false);
+      setIsSyncMode(false);
+      setSyncFromHundredRooms?.(false);
+      setSeed('');
+      setRoomId(null);
+      setIsReady(false);
+      setIsRoomCreator(false);
+      onCancelRecruit();
+      setScreen('seat-selection');
+    })();
+  }, [
+    setScreen,
+    setClearsCount,
+    setIsMultiplay,
+    setIsSyncMode,
+    setSyncFromHundredRooms,
+    setSeed,
+    setRoomId,
+    setIsReady,
+    setIsRoomCreator,
+    onCancelRecruit,
+    syncFromHundredRooms,
+    roomId,
+    leaveCurrentHundredRoom,
+  ]);
 
   return (
     <>
@@ -323,15 +518,19 @@ const AppRouter: React.FC<AppRouterProps> = ({
           }}
           onOpenKeijiban={async () => {
             vibrate(10);
-            await onOpenKeijiban();
-          }}
-          onOpenHundredHub={async () => {
-            vibrate(10);
-            await onOpenHundredHub();
+            try {
+              await onOpenKeijiban();
+            } catch (e) {
+              console.warn('[AppRouter] onOpenKeijiban failed', e);
+            }
           }}
           onOpenRenrakuchoAdmin={async () => {
             vibrate(10);
-            await onOpenRenrakuchoAdmin();
+            try {
+              await onOpenRenrakuchoAdmin();
+            } catch (e) {
+              console.warn('[AppRouter] onOpenRenrakuchoAdmin failed', e);
+            }
           }}
           onSelectQuietRoom={() => {
             vibrate(10);
@@ -345,10 +544,24 @@ const AppRouter: React.FC<AppRouterProps> = ({
             pushQuietImmersiveHistory('slide-puzzle');
             setScreen('slide-puzzle');
           }}
+          onOpenSudoku={() => {
+            vibrate(10);
+            pushQuietImmersiveHistory('sudoku');
+            setScreen('sudoku');
+          }}
           onOpenOthello={() => {
             vibrate(10);
             pushQuietImmersiveHistory('othello');
             setScreen('othello');
+          }}
+          onOpenGomoku={() => {
+            openGomokuFromHub();
+          }}
+          onOpenRelayStory={() => {
+            openRelayStoryFromHub();
+          }}
+          onOpenOuenNote={() => {
+            void openOuenNoteFromHub();
           }}
           onOpenSettings={() => { vibrate(10); setShowSettingsModal(true); }}
           isOnline={isOnline}
@@ -356,8 +569,15 @@ const AppRouter: React.FC<AppRouterProps> = ({
           hundredRecruitHasNew={hundredRecruitHasNew}
           reversiRecruitHasOpen={reversiRecruitHasOpen}
           reversiRecruitHostWaiting={reversiRecruitHostWaiting}
+          gomokuRecruitHasOpen={gomokuRecruitHasOpen}
+          gomokuRecruitHostWaiting={gomokuRecruitHostWaiting}
           renrakuchoHasUnread={renrakuchoHasUnread}
+          ouenNoteHasUnread={ouenNoteHasUnread}
           viewerCount={viewerCount}
+          hubPresencePeers={hubPresencePeers}
+          hubVisitorTotal={hubVisitorTotal}
+          greenGateActive={greenGateActive}
+          shussekiRegular={shussekiRegular}
           nickname={nickname}
           setNickname={setNickname}
           userEmoji={userEmoji}
@@ -404,6 +624,56 @@ const AppRouter: React.FC<AppRouterProps> = ({
             onInterstitialNaturalBreak={tryInterstitialAtNaturalBreak}
             onSocialSessionEndInterstitial={tryInterstitialAtSocialSessionEnd}
             onRecordShussekiGamePlay={recordShussekiGamePlay}
+            streamMode={streamMode}
+            coordOverlayEnabled={coordOverlayEnabled}
+          />
+        )}
+
+        {screen === 'gomoku' && (
+          <GomokuGame
+            onBack={handleBackToTitle}
+            nickname={nickname}
+            userEmoji={userEmoji}
+            firebaseUser={firebaseUser}
+            addLog={addLog}
+            logs={logs}
+            onGoogleLogin={handleGoogleLogin}
+            onRecordShussekiGamePlay={recordShussekiGamePlay}
+            streamMode={streamMode}
+            coordOverlayEnabled={coordOverlayEnabled}
+          />
+        )}
+
+        {screen === 'relay-story' && (
+          <RelayStoryScreen
+            onBack={handleBackToTitle}
+            nickname={nickname}
+            userEmoji={userEmoji}
+            firebaseUser={firebaseUser}
+            onGoogleLogin={handleGoogleLogin}
+          />
+        )}
+
+        {screen === 'ouen-note' && (
+          <OuenNoteScreen
+            onBack={() => {
+              vibrate(10);
+              window.history.back();
+            }}
+            nickname={nickname}
+            userEmoji={userEmoji}
+            firebaseUser={firebaseUser}
+            onGoogleLogin={handleGoogleLogin}
+          />
+        )}
+
+        {screen === 'sudoku' && (
+          <SudokuGame
+            onBack={() => {
+              vibrate(10);
+              handleBackToTitle();
+            }}
+            onClearInterstitial={tryInterstitialAtSudokuClear}
           />
         )}
       </Suspense>
@@ -414,7 +684,11 @@ const AppRouter: React.FC<AppRouterProps> = ({
         reserveBottomStatusInset={
           screen !== 'quiet-room' &&
           screen !== 'slide-puzzle' &&
+          screen !== 'sudoku' &&
           screen !== 'othello' &&
+          screen !== 'gomoku' &&
+          screen !== 'relay-story' &&
+          screen !== 'ouen-note' &&
           screen !== 'select' &&
           screen !== 'game' &&
           screen !== 'seat-selection'
@@ -432,6 +706,7 @@ const AppRouter: React.FC<AppRouterProps> = ({
           isSyncMode={isSyncMode}
           onSetSyncMode={handleSetSyncMode}
           onSelectProblem={(cat, isKatakana) => {
+            if (isWordCategoryPaused(cat.category)) return;
             vibrate(20);
             startNewGame(cat, undefined, undefined, isKatakana);
           }}
@@ -442,7 +717,10 @@ const AppRouter: React.FC<AppRouterProps> = ({
           onInterstitialNaturalBreak={tryInterstitialAtNaturalBreak}
           language={language}
           seed={seed}
-          onClearSeed={() => {
+          onClearSeed={async () => {
+            if (syncFromHundredRooms && roomId) {
+              await leaveCurrentHundredRoom?.();
+            }
             setSeed('');
             setRoomId(null);
             setIsReady(false);
@@ -480,39 +758,41 @@ const AppRouter: React.FC<AppRouterProps> = ({
             gameState={gameState}
             onUpdateFound={onUpdateFound}
             onBack={async () => {
+              if (isSyncMode && !isMultiplay && syncFromHundredRooms && !!roomId) {
+                await exitHundredPlayToHub(roomId);
+                return;
+              }
               vibrate(10);
               if (isMultiplay || (isSyncMode && !!roomId)) {
                 setScreen('select');
-                if (isSyncMode && !isMultiplay && syncFromHundredRooms && !!roomId) {
-                  void onOpenHundredHub({ focusCreateForm: false });
-                }
                 return;
               }
               await tryInterstitialAtNaturalBreak();
-              if (isSyncMode && !isMultiplay && syncFromHundredRooms && !!roomId) {
-                setScreen('select');
-                void onOpenHundredHub({ focusCreateForm: false });
-                return;
-              }
               setScreen('select');
             }}
             onBackToBoard={async () => {
+              if (roomId) {
+                await exitHundredPlayToHub(roomId);
+                return;
+              }
               setScreen('select');
               await onOpenHundredHub({ focusCreateForm: false });
             }}
             onBackToRecruitBoard={async () => {
               vibrate(10);
-              if (isMultiplay || (isSyncMode && !!roomId)) {
-                await tryInterstitialAtSocialSessionEnd();
-              } else {
-                await tryInterstitialAtNaturalBreak();
-              }
+              clearHundredRestoreSession();
+              await leaveCurrentHundredRoom?.();
               setSeed('');
               setRoomId(null);
+              setSyncFromHundredRooms?.(false);
               setScreen('seat-selection');
               markHundredRecruitSeen?.();
               window.location.assign(
-                sanjuuRecruitBoardUrlWithRakudaProfile({ emoji: userEmoji, nickname })
+                sanjuuRecruitBoardUrlForHundredRecruit({
+                  emoji: userEmoji,
+                  nickname,
+                  hundredMode: 'pickup',
+                })
               );
             }}
             onBackToTitle={async () => {
@@ -565,10 +845,27 @@ const AppRouter: React.FC<AppRouterProps> = ({
             hundredCoop={isSyncMode && !isMultiplay && syncFromHundredRooms && !!roomId}
             hundredRoster={hundredRoster}
             hundredRoomHostUid={hundredRoomHostUid}
+            hundredRoomStartedAt={hundredRoomStartedAt}
+            hundredRoomLastFoundAt={hundredRoomLastFoundAt}
+            hundredRoomUpdatedAt={hundredRoomUpdatedAt}
             currentFirebaseUid={firebaseUser?.uid ?? null}
             onHundredRoomFinished={onHundredRoomFinished}
             onRakudaRoboReplay={onRakudaRoboReplay}
+            onRoboPickupLoungeAutoRefresh={onRoboPickupLoungeAutoRefresh}
+            onLeaveHundredRoom={leaveCurrentHundredRoom}
+            onHundredPickupClearInterstitial={tryInterstitialAtHundredPickupClear}
             streamMode={streamMode}
+            coordOverlayEnabled={coordOverlayEnabled}
+            adminStreamLiveBadgeControl={adminStreamLiveBadgeControl}
+            streamLiveBadgeEnabled={streamLiveBadgeEnabled}
+            onToggleStreamLiveBadge={
+              setStreamLiveBadgeEnabled
+                ? () => setStreamLiveBadgeEnabled(!streamLiveBadgeEnabled)
+                : undefined
+            }
+            hundredWaitHeadlessState={hundredWaitHeadlessState}
+            onHundredHostStart={onHundredHostStart}
+            onHundredJoinRetry={onHundredJoinRetry}
           />
         )}
       </Suspense>
@@ -577,11 +874,34 @@ const AppRouter: React.FC<AppRouterProps> = ({
         open={
           showNewRecruitPopup &&
           hundredRecruitHasNew &&
-          (screen === 'seat-selection' || screen === 'slide-puzzle' || screen === 'othello')
+          !suppressHundredRecruitPopup &&
+          (screen === 'seat-selection' ||
+            screen === 'slide-puzzle' ||
+            screen === 'sudoku' ||
+            screen === 'othello' ||
+            screen === 'gomoku' ||
+            screen === 'relay-story')
         }
         userEmoji={userEmoji}
         nickname={nickname}
         onDismiss={dismissNewRecruitPopup}
+      />
+
+      <GomokuTrialPopup
+        open={showGomokuTrialPopup && screen === 'seat-selection' && !showNewRecruitPopup}
+        onDismiss={dismissGomokuTrialPopup}
+        onTry={tryGomokuFromTrialPopup}
+      />
+
+      <RelayStoryTrialPopup
+        open={
+          showRelayStoryTrialPopup &&
+          screen === 'seat-selection' &&
+          !showNewRecruitPopup &&
+          !showGomokuTrialPopup
+        }
+        onDismiss={dismissRelayStoryTrialPopup}
+        onTry={tryRelayStoryFromTrialPopup}
       />
     </>
   );

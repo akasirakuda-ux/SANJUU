@@ -48,7 +48,9 @@ export const useLogs = (firebaseUser: any, handleFirestoreError: any) => {
       const logsToSync = [...logBufferRef.current];
       logBufferRef.current = [];
       
-      console.log(`Syncing ${logsToSync.length} logs to Firestore...`);
+      if (import.meta.env.DEV) {
+        console.log(`Syncing ${logsToSync.length} logs to Firestore...`);
+      }
       
       try {
         const batch = writeBatch(db);
@@ -70,7 +72,9 @@ export const useLogs = (firebaseUser: any, handleFirestoreError: any) => {
     
     return () => {
       clearInterval(interval);
-      syncLogs();
+      void syncLogs().catch((error) => {
+        console.warn('[useLogs] syncLogs on unmount failed', error);
+      });
     };
   }, [firebaseUser]);
 
@@ -100,7 +104,9 @@ export const useLogs = (firebaseUser: any, handleFirestoreError: any) => {
       }
     };
 
-    fetchLogs();
+    void fetchLogs().catch((error) => {
+      console.warn('[useLogs] fetchLogs failed', error);
+    });
   }, [firebaseUser, handleFirestoreError]);
 
   return {

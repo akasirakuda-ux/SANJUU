@@ -92,7 +92,7 @@ export const REVERSI_PIECE_THEMES: readonly ReversiPieceTheme[] = [
 ] as const;
 
 /** オンライン募集時 — 先後の決め方 */
-export type ReversiOnlineStartMode = 'default_black' | 'coin';
+export type ReversiOnlineStartMode = 'default_black' | 'guest_black' | 'coin';
 
 /** @deprecated Firestore 互換 */
 export type ReversiOnlineStartModeLegacy = ReversiOnlineStartMode | 'roulette';
@@ -168,11 +168,14 @@ export const REVERSI_BOARD_THEMES: readonly ReversiBoardTheme[] = [
 export interface ReversiLocalViewPrefs {
   myStonePatternId: ReversiMyStonePatternId;
   boardThemeId: ReversiBoardThemeId;
+  /** らくだロボ対戦 — 自分の先後 */
+  cpuTurnPickMode: ReversiTurnPickMode;
 }
 
 export const REVERSI_DEFAULT_LOCAL_VIEW_PREFS: ReversiLocalViewPrefs = {
   myStonePatternId: 'classic',
   boardThemeId: 'classic',
+  cpuTurnPickMode: 'black_first',
 };
 
 /** ルーム設定（Firestore に保存 — ルールのみ） */
@@ -258,6 +261,7 @@ export function loadReversiLocalViewPrefs(): ReversiLocalViewPrefs {
       ...REVERSI_DEFAULT_LOCAL_VIEW_PREFS,
       myStonePatternId: 'classic',
       boardThemeId: normalizeReversiBoardThemeId(parsed.boardThemeId),
+      cpuTurnPickMode: normalizeReversiTurnPickMode(parsed.cpuTurnPickMode),
     };
   } catch {
     return { ...REVERSI_DEFAULT_LOCAL_VIEW_PREFS };
@@ -328,11 +332,53 @@ export function reversiMyStonePatternLabelJa(id: ReversiMyStonePatternId): strin
   return getReversiPieceTheme(id).labelJa;
 }
 
+export function normalizeReversiTurnPickMode(mode: unknown): ReversiTurnPickMode {
+  if (mode === 'white_first' || mode === 'random') return mode;
+  return 'black_first';
+}
+
+export function resolveReversiTurnPickColor(mode: ReversiTurnPickMode): OthelloColor {
+  if (mode === 'black_first') return 'black';
+  if (mode === 'white_first') return 'white';
+  return Math.random() < 0.5 ? 'black' : 'white';
+}
+
+export function reversiTurnPickModeLabelJa(mode: ReversiTurnPickMode): string {
+  switch (mode) {
+    case 'black_first':
+      return '先手（黒）';
+    case 'white_first':
+      return '後手（白）';
+    case 'random':
+      return 'おまかせ';
+  }
+}
+
+export function reversiTurnPickModeHintJa(mode: ReversiTurnPickMode): string {
+  switch (mode) {
+    case 'black_first':
+      return 'あなたが黒（先手）で始めます';
+    case 'white_first':
+      return 'あなたが白（後攻）で始めます';
+    case 'random':
+      return '黒か白かランダムです';
+  }
+}
+
 export function normalizeReversiOnlineStartMode(
   mode: ReversiOnlineStartModeLegacy | undefined,
 ): ReversiOnlineStartMode {
   if (mode === 'default_black') return 'default_black';
+  if (mode === 'guest_black') return 'guest_black';
   return 'coin';
+}
+
+/** 参加時に先後が決まっている（コイン以外） */
+export function isReversiPresetSideAssignMode(
+  mode: ReversiOnlineStartModeLegacy | undefined,
+): boolean {
+  const normalized = normalizeReversiOnlineStartMode(mode);
+  return normalized === 'default_black' || normalized === 'guest_black';
 }
 
 export function getReversiPieceTheme(id: ReversiPieceThemeId): ReversiPieceTheme {
@@ -347,6 +393,8 @@ export function reversiOnlineStartModeLabelJa(mode: ReversiOnlineStartModeLegacy
   switch (normalizeReversiOnlineStartMode(mode)) {
     case 'default_black':
       return 'ホスト先攻';
+    case 'guest_black':
+      return '参加者先攻';
     case 'coin':
       return 'コインで決める';
   }
@@ -356,6 +404,8 @@ export function reversiOnlineStartModeHintJa(mode: ReversiOnlineStartModeLegacy 
   switch (normalizeReversiOnlineStartMode(mode)) {
     case 'default_black':
       return 'ホストが黒（先手）、参加側が白（後攻）';
+    case 'guest_black':
+      return '参加側が黒（先手）、ホストが白（後攻）';
     case 'coin':
       return '参加後にコインで先後を決めます';
   }
@@ -369,6 +419,8 @@ export function reversiHandicapLogLabelJa(corners: number): string {
 
 export const RAKUDA_ROBO_EMOJI = '🤖';
 export const RAKUDA_ROBO_NAME = 'らくだロボ';
+/** 放置モードの foundWords / Firestore 用（実ユーザー UID ではない） */
+export const RAKUDA_ROBO_PLAYER_ID = '__rakuda_robo__';
 
 /** オンライン：手番開始から最終1分ゲージまで（3分） */
 export const REVERSI_ONLINE_TURN_IDLE_MS = 3 * 60 * 1000;

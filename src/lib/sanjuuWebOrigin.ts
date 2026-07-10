@@ -1,5 +1,8 @@
 const SANJUU_WEB_FALLBACK_LOCAL = 'http://localhost:3200';
 
+/** `lib/tileMatch/config` の `RAKUDA_TILE_MATCH_CREATE_FRAGMENT` と同一（循環 import 回避） */
+const RAKUDA_TILE_MATCH_CREATE_FRAGMENT = 'rk-tile-match-create';
+
 function stripTrailingSlashes(s: string): string {
   return s.replace(/\/+$/, '');
 }
@@ -93,11 +96,39 @@ export function sanjuuBulletinBoardUrl(): string {
   return `${sanjuuWebOrigin().replace(/\/+$/, '')}/sanjuu/bulletin`;
 }
 
-/** 三十「30募集掲示板」（らくだトップの「３０募集一覧」）。絵文字・ニックの両方が揃うときだけ `rkEmoji` / `rkNick` を付与 */
+/** 三十「ひと言探し」募集掲示板。絵文字・ニックの両方が揃うときだけ `rkEmoji` / `rkNick` を付与 */
 export function sanjuuRecruitBoardUrlWithRakudaProfile(opts: { emoji?: string; nickname?: string }): string {
   const origin = stripTrailingSlashes(sanjuuWebOrigin());
   const u = new URL(`${origin}/sanjuu/recruit-board`);
   appendRakudaProfileQuery(u, opts);
+  return u.toString();
+}
+
+/** 三十「ペア探し」募集掲示板 */
+export function sanjuuTileMatchRecruitBoardUrlWithRakudaProfile(opts: {
+  emoji?: string;
+  nickname?: string;
+}): string {
+  const origin = stripTrailingSlashes(sanjuuWebOrigin());
+  const u = new URL(`${origin}/sanjuu/tile-match-recruit-board`);
+  appendRakudaProfileQuery(u, opts);
+  return u.toString();
+}
+
+/** `hundredMode` に応じて三十の募集掲示板 URL を返す（未指定時はひと言探し） */
+export function sanjuuRecruitBoardUrlForHundredRecruit(opts: {
+  emoji?: string;
+  nickname?: string;
+  hundredMode?: string | null;
+}): string {
+  return sanjuuRecruitBoardUrlWithRakudaProfile(opts);
+}
+
+/** 三十募集板「ペア探し　ひとりで遊ぶ」→ らくだ本体のソロプレイ */
+export function rakudaTileMatchSoloPlayUrl(rakudaOrigin: string): string {
+  const base = rakudaOrigin.replace(/\/+$/, '');
+  const u = new URL(`${base}/`);
+  u.searchParams.set('play', 'tile-match');
   return u.toString();
 }
 
@@ -113,6 +144,17 @@ export function rakudaCommunityBulletinUrl(): string {
     }
   }
   return `${RAKUDA_CANONICAL_ORIGIN.replace(/\/+$/, '')}/keijiban`;
+}
+
+/** `https://rakuda.coffee/hundred#rk-tile-match-create`（プロフィールクエリ付き可） */
+export function rakudaTileMatchCreateUrlWithRakudaProfile(opts: {
+  emoji?: string;
+  nickname?: string;
+}): string {
+  const u = new URL(`${RAKUDA_CANONICAL_ORIGIN.replace(/\/+$/, '')}/hundred`);
+  appendRakudaProfileQuery(u, opts);
+  u.hash = RAKUDA_TILE_MATCH_CREATE_FRAGMENT;
+  return u.toString();
 }
 
 /** みんなであそぶを開き、作成フォームが画面内の先頭付近に来る URL（同一オリジン優先） */

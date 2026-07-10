@@ -13,6 +13,7 @@ import { db } from '../firebase';
 import { applyHostCancelledHundredGeneration } from '../lib/hundredRecruitCancel';
 import { clearHundredRestoreSession } from '../lib/rakudaHundredRestore';
 import { RK19QuietRoomBackButton } from '../ui/baselineParts';
+import { isTabletTouchLayout } from '../lib/tabletPhoneCanvas';
 import {
   rkBandColorCount,
   rkCssColor,
@@ -20,12 +21,34 @@ import {
   rkResolvedBandColor,
 } from '../lib/rakudaHubShell';
 import { RK_GATE_NICK_DISPLAY_CLASS } from '../lib/rakudaGate';
+import RakudaGreenGateEmoji from './RakudaGreenGateEmoji';
+import { useGreenGateActiveByUids } from '../hooks/useGreenGateActiveByUids';
 import {
+  buildHundredRoundRanking,
   countPlacedWordOccurrences,
   countUniqueFoundOccurrences,
 } from '../lib/hundredPickupOccurrences';
 import { formatBoardDimensions, resolveBoardCols, resolveBoardRows } from '../lib/boardDimensions';
-import { RAKUDA_ROBO_EMOJI } from '../lib/reversiConfig';
+import { boardGridColumnLabel, measureCoordGutter } from '../lib/boardGridCoordinates';
+import { RAKUDA_ROBO_EMOJI, RAKUDA_ROBO_NAME } from '../lib/reversiConfig';
+import { isRoboPickupLoungeRoomId, ROBO_PICKUP_STALE_HINT_MS, roboPickupLoungeTitleForRoom } from '../lib/roboPickupLoungeConfig';
+import {
+  activateRoboLoungeResultsHold,
+  clearRoboLoungeResultsHold,
+  isRoboLoungeResultsHoldActive,
+} from '../lib/roboPickupLoungeResultsHold';
+import {
+  filterPresentHundredPlayers,
+  filterRoboLoungeRoundPlayers,
+  HUNDRED_PLAYER_PRESENCE_TICK_MS,
+  hundredPresenceStatusLine,
+} from '../lib/hundredPlayerPresence';
+import { useRoboLoungeLastOccurrenceFill } from '../hooks/useRoboLoungeLastOccurrenceFill';
+import { firestoreLikeToMillis } from '../lib/firestoreTime';
+import { isRoboLoungeRoundIdle } from '../lib/roboPickupLoungeFound';
+import { RK_STREAM_LIVE_BADGE_LABEL } from '../lib/rakudaStreamLiveBadge';
+import RoboPickupLoungeGuide from './Renrakucho/hundred/RoboPickupLoungeGuide';
+import { useKotobaRoboIdleFinish } from '../hooks/useKotobaRoboIdleFinish';
 import {
   clearFlyModalDelayMs,
   FLY_BANNER_DURATION_SEC,
@@ -33,6 +56,9 @@ import {
   CLEAR_FLY_X_PERCENT,
   CLEAR_RESULT_OVERLAY_TIMING_SCALE,
 } from '../lib/clearFlyTiming';
+import { setHundredRoomHintsEnabled } from '../lib/hundredRoomHints';
+import LiveClearReportSoloPanel from './LiveClearReportSoloPanel';
+import { buildSamePuzzleChallengeUrlFromGameState } from '../lib/kotobaChallengeShare';
 
 class ParticlePool {
   pool: any[] = [];
@@ -58,7 +84,7 @@ interface FloatingText { id: number; text: string; x: number; y: number; life: n
 
 interface GameScreenProps {
   gameState: GameState;
-  onUpdateFound: (word: string, start: Point, end: Point, isHint?: boolean) => void;
+  onUpdateFound: (word: string, start: Point, end: Point, isHint?: boolean, options?: { robo?: boolean }) => void;
   onBack: () => void | Promise<void>;
   /** みんなであそぶ（掲示板）へ戻す専用導線（任意） */
   onBackToBoard?: () => void | Promise<void>;
@@ -88,16 +114,37 @@ interface GameScreenProps {
   onBackToTitle?: () => void | Promise<void>;
   /** みんなであそぶ協力（同期盤・hundred_rooms） */
   hundredCoop?: boolean;
-  hundredRoster?: { uid: string; name: string; emoji: string; foundCount: number }[];
+  hundredRoster?: import('../lib/hundredPlayerPresence').HundredRosterPlayer[];
   /** hundred_rooms.hostUid（ホストが離脱するとき確認）。`userId`(アプリUUID)ではなく Firebase Auth の uid と比較する */
   hundredRoomHostUid?: string | null;
+  /** 現行お題の開始（ロボ常設の参加者フィルタ用） */
+  hundredRoomStartedAt?: unknown;
+  /** ロボ常設: 最後に誰かが見つけた時刻 */
+  hundredRoomLastFoundAt?: unknown;
+  hundredRoomUpdatedAt?: unknown;
   /** Firebase Auth の uid（ホスト判定用） */
   currentFirebaseUid?: string | null;
   onHundredRoomFinished?: (reason: 'timeout' | 'cleared') => void;
   /** クリア後: らくだロボが新しい探すことばで同サイズ盤面を再生成 */
   onRakudaRoboReplay?: () => Promise<boolean>;
+  /** みんなであそぶ: クリア後に players から退室（ロボ常設も一般募集と同じ扱い） */
+  onLeaveHundredRoom?: () => void | Promise<void>;
+  /** ロボ常設: お題クリア後に次のお題を自動生成 */
+  onRoboPickupLoungeAutoRefresh?: () => void | Promise<void>;
+  /** ひと言探しクリア時の全面広告（達成の区切り） */
+  onHundredPickupClearInterstitial?: () => void | Promise<void>;
   /** 配信モード（軽量化） */
   streamMode?: boolean;
+  /** 盤面の座標表示（配信モードと別） */
+  coordOverlayEnabled?: boolean;
+  /** 管理者・配信モード時の「配信中」バッジ切替（ひと言探しのみ） */
+  adminStreamLiveBadgeControl?: boolean;
+  streamLiveBadgeEnabled?: boolean;
+  onToggleStreamLiveBadge?: () => void;
+  /** 待機室ロジック（画面非表示）の状態 */
+  hundredWaitHeadlessState?: import('../lib/hundredWaitHeadless').HundredWaitHeadlessState | null;
+  onHundredHostStart?: () => void;
+  onHundredJoinRetry?: () => void;
 }
 
 /** ラストワン／クリアの実測幅を揃える（見た目の font 系は表示と同一に） */
@@ -115,10 +162,23 @@ const GameScreen: React.FC<GameScreenProps> = ({
   hundredCoop = false,
   hundredRoster = [],
   hundredRoomHostUid = null,
+  hundredRoomStartedAt = null,
+  hundredRoomLastFoundAt = null,
+  hundredRoomUpdatedAt = null,
   currentFirebaseUid = null,
   onHundredRoomFinished,
   onRakudaRoboReplay,
+  onLeaveHundredRoom,
+  onRoboPickupLoungeAutoRefresh,
+  onHundredPickupClearInterstitial,
   streamMode = false,
+  coordOverlayEnabled = false,
+  adminStreamLiveBadgeControl = false,
+  streamLiveBadgeEnabled = false,
+  onToggleStreamLiveBadge,
+  hundredWaitHeadlessState = null,
+  onHundredHostStart,
+  onHundredJoinRetry,
 }) => {
   const displayRoomCode = inviteRoomCodeForShare(shareRoomId, roomId) || null;
   const t = {
@@ -162,8 +222,22 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return 1;
   }, [gameState.gameMode, gameState.searchTimeLimitSec]);
 
+  /** ひと言探し共同: ホストが「ヒントなし」を選んだときは盤面下ボタンを出さない（ロボ常設の10分放置ヒントは別） */
+  const hundredHintsAllowed = !hundredCoop || gameState.hintsEnabled !== false;
+
+  type RoboLoungeClearSnapshot = {
+    targetWord: string;
+    foundWords: GameState['foundWords'];
+  };
+  const [roboLoungeClearSnapshot, setRoboLoungeClearSnapshot] =
+    useState<RoboLoungeClearSnapshot | null>(null);
+
   const leaveFromClearScreen = useCallback(() => {
     vibrate(10);
+    if (isRoboPickupLoungeRoomId(roomId)) {
+      clearRoboLoungeResultsHold();
+      setRoboLoungeClearSnapshot(null);
+    }
     if (hundredCoop) {
       onClearSeed();
       clearHundredRestoreSession();
@@ -171,9 +245,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
         void onBackToRecruitBoard();
         return;
       }
+      void onBack();
+      return;
     }
     void onBack();
-  }, [hundredCoop, onClearSeed, onBack, onBackToRecruitBoard]);
+  }, [hundredCoop, onClearSeed, onBack, onBackToRecruitBoard, roomId, vibrate]);
 
   const [roboReplayBusy, setRoboReplayBusy] = useState(false);
   const handleRakudaRoboReplay = useCallback(async () => {
@@ -212,6 +288,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const [showClearFlyBonus, setShowClearFlyBonus] = useState(false);
   const [showHostInterruptConfirm, setShowHostInterruptConfirm] = useState(false);
   const [hostInterruptInFlight, setHostInterruptInFlight] = useState(false);
+  const [hintsToggleBusy, setHintsToggleBusy] = useState(false);
   const [showGuestInterruptedModal, setShowGuestInterruptedModal] = useState(false);
   const guestInterruptHandledRef = useRef(false);
   const lastFlyMeasureRef = useRef<HTMLSpanElement>(null);
@@ -230,17 +307,66 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return () => window.removeEventListener('resize', measureFlyBannerWidths);
   }, [measureFlyBannerWidths, t.lastOne, t.clearFly]);
 
-  const isHundredHost = useMemo(
-    () =>
-      !!(
-        hundredCoop &&
-        roomId &&
-        currentFirebaseUid &&
-        hundredRoomHostUid &&
-        currentFirebaseUid === hundredRoomHostUid
-      ),
-    [currentFirebaseUid, hundredCoop, hundredRoomHostUid, roomId],
-  );
+  const isHundredHost = useMemo(() => {
+    if (!hundredCoop || !roomId || !currentFirebaseUid) return false;
+    if (hundredRoomHostUid && currentFirebaseUid === hundredRoomHostUid) return true;
+    // hostUid 同期前・ひとり参加（20×30 など）でもホストが中断できるようフォールバック
+    if (!hundredRoomHostUid && hundredRoster.length <= 1) {
+      return (
+        hundredRoster.length === 0 ||
+        hundredRoster.some((p) => p.uid === currentFirebaseUid)
+      );
+    }
+    return false;
+  }, [currentFirebaseUid, hundredCoop, hundredRoomHostUid, hundredRoster, roomId]);
+
+  const isRoboPickupLounge = isRoboPickupLoungeRoomId(roomId);
+
+  const showHundredRoboReplay =
+    hundredCoop &&
+    gameState.category?.category === 'pickup' &&
+    isHundredHost &&
+    !!onRakudaRoboReplay &&
+    !isRoboPickupLounge;
+
+  const showHundredHostStart =
+    hundredCoop &&
+    isHundredHost &&
+    !isRoboPickupLounge &&
+    !!hundredWaitHeadlessState?.canHostStart &&
+    !!onHundredHostStart &&
+    // クリア後は「らくだロボでもう一回」に任せる（同じ導線が二重にならない）
+    !(isFinished && showHundredRoboReplay);
+
+  const showHundredGuestWait =
+    hundredCoop &&
+    !isHundredHost &&
+    !isRoboPickupLounge &&
+    !!hundredWaitHeadlessState &&
+    (hundredWaitHeadlessState.betweenRounds ||
+      (hundredWaitHeadlessState.status === 'recruiting' && !hundredWaitHeadlessState.roomBoardReady));
+
+  const hundredJoinRetryVisible =
+    hundredCoop &&
+    !!hundredWaitHeadlessState?.joinStalled &&
+    (!!hundredWaitHeadlessState.joinError || !hundredWaitHeadlessState.joinOk) &&
+    !!onHundredJoinRetry;
+
+  const hundredHostStartButton = showHundredHostStart ? (
+    <button
+      type="button"
+      className={`${btnPrimary} w-full max-w-xs`}
+      disabled={hundredWaitHeadlessState?.problemsGenerating}
+      onClick={() => onHundredHostStart?.()}
+    >
+      {hundredWaitHeadlessState?.betweenRounds ? '次のお題をはじめる' : 'はじめる'}
+    </button>
+  ) : null;
+
+  const hundredClearAutoLeaveDoneRef = useRef(false);
+  useEffect(() => {
+    hundredClearAutoLeaveDoneRef.current = false;
+  }, [roomId]);
 
   const goToRecruitBoard = useCallback(() => {
     onClearSeed();
@@ -251,6 +377,24 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
     void onBack();
   }, [onBack, onBackToRecruitBoard, onClearSeed]);
+
+  const handleHundredBoardBack = useCallback(() => {
+    vibrate(10);
+    if (hundredCoop && !isFinished && isHundredHost) {
+      setShowHostInterruptConfirm(true);
+      return;
+    }
+    // ゲスト: タイトルへ戻さず一旦退室 → 募集一覧（再参加可）
+    if (hundredCoop && !isFinished) {
+      void onBack();
+      return;
+    }
+    if (typeof onBackToTitle === 'function') {
+      void Promise.resolve(onBackToTitle());
+    } else {
+      void onBack();
+    }
+  }, [hundredCoop, isFinished, isHundredHost, onBack, onBackToTitle, vibrate]);
 
   const performHostInterrupt = useCallback(async () => {
     if (!roomId || !isHundredHost || hostInterruptInFlight) return;
@@ -277,6 +421,21 @@ const GameScreen: React.FC<GameScreenProps> = ({
       goToRecruitBoard();
     }
   }, [goToRecruitBoard, hostInterruptInFlight, isHundredHost, roomId]);
+
+  const handleHostToggleHints = useCallback(async () => {
+    if (!roomId || !isHundredHost || hintsToggleBusy || isFinished) return;
+    const next = !hundredHintsAllowed;
+    setHintsToggleBusy(true);
+    try {
+      await setHundredRoomHintsEnabled(roomId, next);
+      showToast(next ? '☝️ ヒントをオンにしました' : '☝️ ヒントをオフにしました');
+    } catch (e) {
+      console.warn('[GameScreen] toggle hints failed', e);
+      showToast('ヒントの切り替えに失敗しました');
+    } finally {
+      setHintsToggleBusy(false);
+    }
+  }, [roomId, isHundredHost, hintsToggleBusy, isFinished, hundredHintsAllowed, showToast]);
 
   useEffect(() => {
     if (!hundredCoop || !roomId || isHundredHost) return;
@@ -326,9 +485,13 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const [displayConsecutiveClears, setDisplayConsecutiveClears] = useState(consecutiveClears);
   const [finishedPlayers, setFinishedPlayers] = useState<Set<string>>(new Set());
   const lastFoundWordsCount = useRef(gameState.foundWords.length);
+  /** ひと言探し: 同じ正解への効果音二重再生を防ぐ */
+  const playedFoundSoundKeysRef = useRef(new Set<string>());
   /** join/restore 直後の Firestore 同期分はボーナス・クリア演出を抑止する */
   const joinedFoundBaselineRef = useRef<number | null>(null);
   const joinedBaselineTimerRef = useRef<number | null>(null);
+  /** baseline 確定後にクリア判定を再実行（参加時すでに全問見つけ済みの復旧） */
+  const [joinedBaselineLockTick, setJoinedBaselineLockTick] = useState(0);
 
   const clearJoinedFoundBaseline = useCallback(() => {
     if (joinedBaselineTimerRef.current != null) {
@@ -336,6 +499,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
       joinedBaselineTimerRef.current = null;
     }
     joinedFoundBaselineRef.current = null;
+    setJoinedBaselineLockTick(0);
   }, []);
 
   const foundProgressAfterJoin = (count: number) =>
@@ -361,22 +525,72 @@ const GameScreen: React.FC<GameScreenProps> = ({
   });
 
   useEffect(() => {
-    if (!isMultiplay || !roomId) return;
+    if (!isMultiplay || !roomId || hundredCoop) return;
     if (joinedFoundBaselineRef.current === null) return;
     if (gameState.foundWords.length > lastFoundWordsCount.current) {
       const newWord = gameState.foundWords[gameState.foundWords.length - 1];
-      // Only notify if it's from another player
       if (newWord && newWord.userName && newWord.userName !== nickname) {
         showToast(`${newWord.userName}さんが「${convertToHiragana(newWord.word)}」をみつけたよ！`);
+        audioService.noteUserGesture();
         audioService.playCorrectSound();
         vibrate(20);
       }
     }
     lastFoundWordsCount.current = gameState.foundWords.length;
-  }, [gameState.foundWords, isMultiplay, roomId, nickname, showToast]);
+  }, [gameState.foundWords, isMultiplay, roomId, nickname, showToast, hundredCoop]);
+
+  /** ひと言探し: 自分・他プレイヤーの正解発見で効果音（Firestore 同期も含む） */
+  useEffect(() => {
+    if (!hundredCoop || joinedFoundBaselineRef.current === null) return;
+    const prevLen = lastFoundWordsCount.current;
+    if (gameState.foundWords.length <= prevLen) return;
+
+    const newEntries = gameState.foundWords.slice(prevLen);
+    lastFoundWordsCount.current = gameState.foundWords.length;
+    const selfUid = (currentFirebaseUid || userId || '').trim();
+    const nick = (nickname || '').trim();
+
+    for (const fw of newEntries) {
+      const sk = fw.start;
+      const ek = fw.end;
+      const soundKey = `${fw.playerId ?? ''}|${fw.userName ?? ''}|${fw.word}|${sk?.x ?? ''},${sk?.y ?? ''}|${ek?.x ?? ''},${ek?.y ?? ''}`;
+      if (playedFoundSoundKeysRef.current.has(soundKey)) continue;
+      playedFoundSoundKeysRef.current.add(soundKey);
+      if (playedFoundSoundKeysRef.current.size > 240) {
+        playedFoundSoundKeysRef.current = new Set([...playedFoundSoundKeysRef.current].slice(-120));
+      }
+
+      const isSelf =
+        (!!fw.playerId && !!selfUid && fw.playerId === selfUid) ||
+        (!!fw.userName && !!nick && fw.userName.trim() === nick);
+
+      audioService.noteUserGesture();
+      audioService.playCorrectSound();
+      vibrate(isSelf ? 14 : 20);
+    }
+  }, [
+    gameState.foundWords,
+    hundredCoop,
+    currentFirebaseUid,
+    userId,
+    nickname,
+    vibrate,
+  ]);
 
   // Reset finish overlay when a new board arrives (e.g., "next problem")
   useEffect(() => {
+    if (isRoboPickupLounge && isRoboLoungeResultsHoldActive()) {
+      return;
+    }
+    if (isRoboPickupLounge && roboLoungeClearSnapshot) {
+      const incomingWord = (gameState.targetWord || gameState.category?.words?.[0] || '').trim();
+      if (!incomingWord || incomingWord === roboLoungeClearSnapshot.targetWord) {
+        return;
+      }
+      clearRoboLoungeResultsHold();
+      setRoboLoungeClearSnapshot(null);
+    }
+
     setIsFinished(false);
     setShowAnswers(false);
     setIsSuccessFlashing(false);
@@ -389,6 +603,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     setClearDate("");
     clearJoinedFoundBaseline();
     lastFoundWordsCount.current = 0;
+    playedFoundSoundKeysRef.current.clear();
     if (gameState.gameMode === 'search') {
       const limit = Number(gameState.searchTimeLimitSec);
       if (Number.isFinite(limit) && limit > 0) {
@@ -403,6 +618,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
     lastActivityAtMsRef.current = Date.now();
     lastDrawAtMsRef.current = 0;
     lastCanvasPixelSizeRef.current = { w: 0, h: 0 };
+    baseLayerFoundCountRef.current = 0;
+    baseLayerBoardKeyRef.current = '';
   }, [
     // A change in these typically means a new puzzle/round
     gameState.actualSeed,
@@ -415,6 +632,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
     gameState.gameMode,
     gameState.searchTimeLimitSec,
     clearJoinedFoundBaseline,
+    isRoboPickupLounge,
+    roboLoungeClearSnapshot,
   ]);
 
   // Sync finish notifications
@@ -492,10 +711,108 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
   }, [showStartText]);
 
+  const displayHundredRoster = useMemo(() => {
+    if (!hundredCoop || !currentFirebaseUid) return hundredRoster;
+    const selfNick = (nickname || '').trim();
+    const selfEmoji = (userEmoji || '').trim();
+    if (!selfNick && !selfEmoji) return hundredRoster;
+    return hundredRoster.map((p) =>
+      p.uid === currentFirebaseUid
+        ? {
+            ...p,
+            name: selfNick || p.name,
+            emoji: selfEmoji || p.emoji,
+          }
+        : p,
+    );
+  }, [hundredCoop, hundredRoster, currentFirebaseUid, nickname, userEmoji]);
+
+  const [hundredPresenceNowMs, setHundredPresenceNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hundredCoop || isFinished) return;
+    const id = window.setInterval(() => setHundredPresenceNowMs(Date.now()), HUNDRED_PLAYER_PRESENCE_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [hundredCoop, isFinished]);
+
+  const roboStaleHintAvailable = useMemo(() => {
+    if (!isRoboPickupLounge || isFinished) return false;
+    const startedMs = firestoreLikeToMillis(hundredRoomStartedAt);
+    if (!startedMs) return false;
+    return isRoboLoungeRoundIdle(
+      gameState.foundWords,
+      gameState.placedWords,
+      startedMs,
+      firestoreLikeToMillis(hundredRoomLastFoundAt),
+      hundredPresenceNowMs,
+      ROBO_PICKUP_STALE_HINT_MS,
+      firestoreLikeToMillis(hundredRoomUpdatedAt),
+    );
+  }, [
+    isRoboPickupLounge,
+    isFinished,
+    hundredRoomStartedAt,
+    hundredRoomLastFoundAt,
+    hundredRoomUpdatedAt,
+    gameState.foundWords,
+    gameState.placedWords,
+    hundredPresenceNowMs,
+  ]);
+
+  const pickupHintButtonVisible = hundredHintsAllowed || roboStaleHintAvailable;
+
+  useRoboLoungeLastOccurrenceFill({
+    enabled: isRoboPickupLounge && hundredCoop && !isFinished,
+    roomId,
+    isFinished,
+    placedWords: gameState.placedWords,
+    foundWords: gameState.foundWords,
+    hundredRoomStartedAt,
+    hundredRoomLastFoundAt,
+    hundredRoomUpdatedAt,
+    nowMs: hundredPresenceNowMs,
+  });
+
+  useEffect(() => {
+    if (hundredCoop && !pickupHintButtonVisible) {
+      setHintWord(null);
+    }
+  }, [hundredCoop, pickupHintButtonVisible]);
+
+  const presentHundredRoster = useMemo(
+    () =>
+      filterPresentHundredPlayers(displayHundredRoster, {
+        nowMs: hundredPresenceNowMs,
+        alwaysIncludeUid: currentFirebaseUid,
+      }),
+    [displayHundredRoster, hundredPresenceNowMs, currentFirebaseUid],
+  );
+
+  const activeHundredRoster = useMemo(() => {
+    if (!isRoboPickupLounge) return presentHundredRoster;
+    return filterRoboLoungeRoundPlayers(
+      presentHundredRoster,
+      hundredRoomStartedAt,
+      gameState.foundWords,
+      { nowMs: hundredPresenceNowMs, alwaysIncludeUid: currentFirebaseUid },
+    );
+  }, [
+    isRoboPickupLounge,
+    presentHundredRoster,
+    hundredRoomStartedAt,
+    gameState.foundWords,
+    hundredPresenceNowMs,
+    currentFirebaseUid,
+  ]);
+
+  const hundredPresenceLine = useMemo(
+    () => hundredPresenceStatusLine(activeHundredRoster.length),
+    [activeHundredRoster.length],
+  );
+
   // 貢献者の計算
   const contributors = React.useMemo(() => {
     const counts: Record<string, number> = {};
-    const nameByUid = Object.fromEntries(hundredRoster.map((p) => [p.uid, p.name]));
+    const nameByUid = Object.fromEntries(displayHundredRoster.map((p) => [p.uid, p.name]));
     gameState.foundWords.forEach(fw => {
       const name =
         fw.userName ||
@@ -506,7 +823,30 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5); // 上位5名
-  }, [gameState.foundWords, language, hundredRoster]);
+  }, [gameState.foundWords, language, displayHundredRoster]);
+
+  /** クリア画面ランキング用：この局の foundWords のみ（Firestore の累計 foundCount ではない） */
+  const roboLoungeRankingFoundWords =
+    isRoboPickupLounge && roboLoungeClearSnapshot
+      ? roboLoungeClearSnapshot.foundWords
+      : gameState.foundWords;
+
+  const hundredRoundRanking = React.useMemo(
+    () =>
+      hundredCoop
+        ? buildHundredRoundRanking(roboLoungeRankingFoundWords, displayHundredRoster)
+        : [],
+    [hundredCoop, roboLoungeRankingFoundWords, displayHundredRoster],
+  );
+
+  /** みんなであそぶ以外のソロ、またはひと言探しでこの局が1人だけ */
+  const isSoloClear = React.useMemo(() => {
+    if (isMultiplay && !hundredCoop) return false;
+    if (!hundredCoop) return true;
+    const isPickupHundred = gameState.category?.category === 'pickup';
+    if (isPickupHundred && hundredRoundRanking.length <= 1) return true;
+    return false;
+  }, [gameState.category?.category, hundredCoop, hundredRoundRanking.length, isMultiplay]);
 
   useEffect(() => {
     if (
@@ -565,10 +905,16 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const [layout, setLayout] = useState({
     cellSize: 0,
     padding: 8,
+    gridOriginX: 8,
+    gridOriginY: 8,
+    coordGutterLeft: 0,
+    coordGutterTop: 0,
+    labelFontSize: 12,
     boardSize: 0,
     boardWidth: 0,
     boardHeight: 0,
   });
+  const showCoordLayer = streamMode || coordOverlayEnabled;
   /** ヒント・こたえ帯が縦長のため初期値だけ余裕あり（実測で上書き） */
   const [soloBottomControlsPx, setSoloBottomControlsPx] = useState(152);
   const layoutRef = useRef(layout);
@@ -586,8 +932,28 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const lastDrawAtMsRef = useRef(0);
   const forceDrawRef = useRef(true);
   const lastActivityAtMsRef = useRef(Date.now());
+  /** ロボ放置判定用 — 指操作だけ更新（ロボの正解でリセットしない） */
+  const lastUserPointerAtMsRef = useRef(Date.now());
   const lagScoreRef = useRef(0);
   const lastCanvasPixelSizeRef = useRef({ w: 0, h: 0 });
+  const hundredCoopRef = useRef(hundredCoop);
+  useEffect(() => {
+    hundredCoopRef.current = hundredCoop;
+  }, [hundredCoop]);
+  const hundredRoomFinishSentRef = useRef(false);
+  const hundredRoundCompleteRef = useRef(false);
+  const isRoboPickupLoungeRef = useRef(isRoboPickupLounge);
+  useEffect(() => {
+    isRoboPickupLoungeRef.current = isRoboPickupLounge;
+  }, [isRoboPickupLounge]);
+  const onHundredRoomFinishedRef = useRef(onHundredRoomFinished);
+  useEffect(() => {
+    onHundredRoomFinishedRef.current = onHundredRoomFinished;
+  }, [onHundredRoomFinished]);
+  /** みんなであそぶ: 盤面の下地（文字＋正解帯）を増分更新して再描画コストを抑える */
+  const baseLayerCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const baseLayerFoundCountRef = useRef(0);
+  const baseLayerBoardKeyRef = useRef('');
   const layoutUpdateRafRef = useRef(0);
   const startTimeRef = useRef<number>(Date.now());
   const selectionRef = useRef<Selection>({ start: null, end: null });
@@ -655,29 +1021,37 @@ const GameScreen: React.FC<GameScreenProps> = ({
     };
   }, [hundredCoop, isFinished]);
 
-  // 盤面/進捗が更新されたら「活動あり」とみなして即時描画を許可
+  // 盤面/進捗が更新されたら即時描画を許可（放置判定の lastUserPointerAtMsRef は触らない）
   useEffect(() => {
     if (!hundredCoop || isFinished) return;
-    lastActivityAtMsRef.current = Date.now();
     forceDrawRef.current = true;
   }, [hundredCoop, isFinished, gameState.foundWords.length, gameState.grid.length, hundredRoster.length]);
+
+  const showBoardParticipantName = useCallback(
+    (name: string, isSelf: boolean) => {
+      vibrate(10);
+      const label = (name || 'ななしさん').trim() || 'ななしさん';
+      showToast(isSelf ? `${label}（あなた）` : label);
+    },
+    [showToast, vibrate],
+  );
 
   const compactMode = (compactStreamMode || (autoCompactMode && !!hundredCoop && !isFinished));
 
   const boardParticipants = useMemo(() => {
-    if (hundredCoop && hundredRoster.length > 0) {
+    if (hundredCoop && activeHundredRoster.length > 0) {
       const hostUid = hundredRoomHostUid;
       const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'ja');
       if (!hostUid) {
-        return hundredRoster.map((p) => ({
+        return activeHundredRoster.map((p) => ({
           uid: p.uid,
           name: p.name,
           emoji: (p.emoji || '🌸').trim() || '🌸',
         }));
       }
-      const host = hundredRoster.find((p) => p.uid === hostUid);
-      const rest = hundredRoster.filter((p) => p.uid !== hostUid).sort(byName);
-      const ordered = host ? [host, ...rest] : [...hundredRoster].sort(byName);
+      const host = activeHundredRoster.find((p) => p.uid === hostUid);
+      const rest = activeHundredRoster.filter((p) => p.uid !== hostUid).sort(byName);
+      const ordered = host ? [host, ...rest] : [...activeHundredRoster].sort(byName);
       return ordered.map((p) => ({
         uid: p.uid,
         name: p.name,
@@ -692,19 +1066,29 @@ const GameScreen: React.FC<GameScreenProps> = ({
       }));
     }
     return [];
-  }, [hundredCoop, hundredRoster, hundredRoomHostUid, isMultiplay, roomPlayers]);
+  }, [hundredCoop, activeHundredRoster, hundredRoomHostUid, isMultiplay, roomPlayers]);
+
+  const boardParticipantUids = useMemo(
+    () => boardParticipants.map((p) => p.uid),
+    [boardParticipants]
+  );
+  const greenGateByUid = useGreenGateActiveByUids(boardParticipantUids);
 
   const updateLayout = useCallback(() => {
     if (!mainContentRef.current || !canvasRef.current) return;
 
-    const containerWidth = mainContentRef.current.clientWidth;
-    const containerHeight = mainContentRef.current.clientHeight;
+    const el = mainContentRef.current;
+    const viewportW = window.visualViewport?.width ?? window.innerWidth;
+    // px-2/sm:px-3 左右 + 盤面枠 border 分を引いてはみ出しを防ぐ
+    const horizontalPad = hundredCoop ? 6 : 28;
+    const containerWidth = Math.min(el.clientWidth, Math.max(0, viewportW - horizontalPad));
+    const containerHeight = el.clientHeight;
 
     // reflow 中に一瞬 0 になると盤面を消す → canvas が黒く見える。前回サイズを維持する。
     if (containerWidth <= 0 || containerHeight <= 0) return;
 
-    // 盤面領域の内側に少し余白を取り、上下の flex 端で切れないようにする
-    const edgeInset = 6;
+    const edgeInset = hundredCoop ? 0 : 6;
+    const gridPad = hundredCoop ? 4 : GRID_PADDING;
     const availableHeight = Math.max(0, containerHeight - edgeInset * 2);
     const availableWidth = Math.max(0, containerWidth - edgeInset * 2);
 
@@ -719,27 +1103,69 @@ const GameScreen: React.FC<GameScreenProps> = ({
       grid: gameState.grid,
     });
 
-    let cellSize = 0;
-    let boardWidth = 0;
-    let boardHeight = 0;
+    const fitBoard = (
+      gutterLeft: number,
+      gutterTop: number,
+    ): { cellSize: number; boardWidth: number; boardHeight: number } | null => {
+      let cellFromWidth = (availableWidth - gutterLeft - gridPad * 2) / cols;
+      let cellFromHeight = (availableHeight - gutterTop - gridPad * 2) / rows;
+      let cellSize = Math.min(cellFromWidth, cellFromHeight);
+      if (!Number.isFinite(cellSize) || cellSize <= 0) return null;
 
-    if (cols !== rows) {
-      cellSize = (availableWidth - GRID_PADDING * 2) / cols;
-      boardWidth = cols * cellSize + GRID_PADDING * 2;
-      boardHeight = rows * cellSize + GRID_PADDING * 2;
-    } else {
-      let availableSize = Math.min(availableWidth, availableHeight, 800);
-      if (availableSize < 0) availableSize = 0;
-      cellSize = (availableSize - GRID_PADDING * 2) / cols;
-      boardWidth = availableSize;
-      boardHeight = availableSize;
+      let boardWidth = gutterLeft + gridPad + cols * cellSize + gridPad;
+      let boardHeight = gutterTop + gridPad + rows * cellSize + gridPad;
+
+      if (boardWidth > availableWidth) {
+        cellSize = (availableWidth - gutterLeft - gridPad * 2) / cols;
+        boardWidth = gutterLeft + gridPad + cols * cellSize + gridPad;
+        boardHeight = gutterTop + gridPad + rows * cellSize + gridPad;
+      }
+      if (boardHeight > availableHeight) {
+        cellSize = (availableHeight - gutterTop - gridPad * 2) / rows;
+        boardWidth = gutterLeft + gridPad + cols * cellSize + gridPad;
+        boardHeight = gutterTop + gridPad + rows * cellSize + gridPad;
+      }
+
+      if (cellSize <= 0 || boardWidth <= 0 || boardHeight <= 0) return null;
+      return { cellSize, boardWidth, boardHeight };
+    };
+
+    let coordGutterLeft = 0;
+    let coordGutterTop = 0;
+    let labelFontSize = 12;
+
+    let fitted = fitBoard(0, 0);
+    if (!fitted) return;
+
+    if (showCoordLayer) {
+      const gutter = measureCoordGutter(fitted.cellSize);
+      coordGutterLeft = gutter.left;
+      coordGutterTop = gutter.top;
+      labelFontSize = gutter.fontSize;
+      fitted = fitBoard(coordGutterLeft, coordGutterTop);
+      if (!fitted) return;
+      const refined = measureCoordGutter(fitted.cellSize);
+      if (refined.left !== coordGutterLeft || refined.top !== coordGutterTop) {
+        coordGutterLeft = refined.left;
+        coordGutterTop = refined.top;
+        labelFontSize = refined.fontSize;
+        fitted = fitBoard(coordGutterLeft, coordGutterTop);
+        if (!fitted) return;
+      }
     }
 
-    if (cellSize <= 0 || boardWidth <= 0 || boardHeight <= 0) return;
+    const { cellSize, boardWidth, boardHeight } = fitted;
+    const gridOriginX = coordGutterLeft + gridPad;
+    const gridOriginY = coordGutterTop + gridPad;
 
     const nextLayout = {
       cellSize,
-      padding: GRID_PADDING,
+      padding: gridPad,
+      gridOriginX,
+      gridOriginY,
+      coordGutterLeft,
+      coordGutterTop,
+      labelFontSize,
       boardSize: boardWidth,
       boardWidth,
       boardHeight,
@@ -748,7 +1174,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
     const layoutChanged =
       Math.abs(prev.cellSize - nextLayout.cellSize) > 0.01 ||
       Math.abs(prev.boardWidth - nextLayout.boardWidth) > 0.01 ||
-      Math.abs(prev.boardHeight - nextLayout.boardHeight) > 0.01;
+      Math.abs(prev.boardHeight - nextLayout.boardHeight) > 0.01 ||
+      Math.abs(prev.gridOriginX - nextLayout.gridOriginX) > 0.01 ||
+      Math.abs(prev.gridOriginY - nextLayout.gridOriginY) > 0.01 ||
+      Math.abs(prev.labelFontSize - nextLayout.labelFontSize) > 0.01;
 
     if (layoutChanged) {
       layoutRef.current = nextLayout;
@@ -779,7 +1208,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
-  }, [gameState.boardCols, gameState.boardRows, gameState.difficulty, gameState.grid]);
+  }, [gameState.boardCols, gameState.boardRows, gameState.difficulty, gameState.grid, hundredCoop, streamMode]);
 
   useEffect(() => {
     updateLayout();
@@ -789,7 +1218,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
       resizeTimer = window.setTimeout(updateLayout, 200);
     };
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.visualViewport?.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.visualViewport?.removeEventListener('resize', handleResize);
+    };
   }, [updateLayout]);
 
   // Layout can be temporarily 0-height on mobile while bottom UI settles.
@@ -858,6 +1291,319 @@ const GameScreen: React.FC<GameScreenProps> = ({
     ctx.closePath();
   };
 
+  const enumerateSegmentCells = (start: Point, end: Point): Point[] => {
+    const cells: Point[] = [];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const distInCells = Math.max(Math.abs(dx), Math.abs(dy));
+    const unitX = distInCells === 0 ? 0 : dx === 0 ? 0 : dx / distInCells;
+    const unitY = distInCells === 0 ? 1 : dy === 0 ? 0 : dy / distInCells;
+    for (let i = 0; i <= distInCells; i++) {
+      cells.push({
+        x: Math.round(start.x + unitX * i),
+        y: Math.round(start.y + unitY * i),
+      });
+    }
+    return cells;
+  };
+
+  const paintFoundBeadRibbonOnCtx = (
+    ctx: CanvasRenderingContext2D,
+    fw: GameState['foundWords'][number],
+    cellSize: number,
+    gridOriginX: number,
+    gridOriginY: number,
+  ) => {
+    if (!fw.start || !fw.end) return;
+    const cells = enumerateSegmentCells(fw.start, fw.end);
+    if (cells.length === 0) return;
+
+    const beadRadius = cellSize * 0.4;
+    const neckThickness = cellSize * 0.16;
+    const neckInset = beadRadius * 0.82;
+
+    const cellCenter = (gx: number, gy: number) => ({
+      cx: gx * cellSize + gridOriginX + cellSize / 2,
+      cy: gy * cellSize + gridOriginY + cellSize / 2,
+    });
+
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = fw.color;
+
+    for (let i = 0; i < cells.length - 1; i++) {
+      const c1 = cellCenter(cells[i].x, cells[i].y);
+      const c2 = cellCenter(cells[i + 1].x, cells[i + 1].y);
+      const angle = Math.atan2(c2.cy - c1.cy, c2.cx - c1.cx);
+      const dist = Math.hypot(c2.cx - c1.cx, c2.cy - c1.cy);
+      const segLen = Math.max(0, dist - neckInset * 2);
+      if (segLen <= 0) continue;
+      ctx.save();
+      ctx.translate((c1.cx + c2.cx) / 2, (c1.cy + c2.cy) / 2);
+      ctx.rotate(angle);
+      drawRoundedRect(ctx, -segLen / 2, -neckThickness / 2, segLen, neckThickness, neckThickness / 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    for (const cell of cells) {
+      const { cx, cy } = cellCenter(cell.x, cell.y);
+      ctx.beginPath();
+      ctx.arc(cx, cy, beadRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  };
+
+  const paintFoundRibbonOnCtx = (
+    ctx: CanvasRenderingContext2D,
+    fw: GameState['foundWords'][number],
+    cellSize: number,
+    gridOriginX: number,
+    gridOriginY: number,
+    answerRibbonThickness: number,
+    ribbonExtension: number,
+  ) => {
+    if (!fw.start || !fw.end) return;
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = fw.color;
+
+    const dx = fw.end.x - fw.start.x;
+    const dy = fw.end.y - fw.start.y;
+    const distInCells = Math.max(Math.abs(dx), Math.abs(dy));
+    const unitX = distInCells === 0 ? 0 : dx === 0 ? 0 : dx / distInCells;
+    const unitY = distInCells === 0 ? 1 : dy === 0 ? 0 : dy / distInCells;
+    const isDiagonal = unitX !== 0 && unitY !== 0;
+    const edgeFactor = isDiagonal ? (cellSize / 2) * 0.75 : cellSize / 2 + ribbonExtension;
+    const x1 = fw.start.x * cellSize + gridOriginX + cellSize / 2 - unitX * edgeFactor;
+    const y1 = fw.start.y * cellSize + gridOriginY + cellSize / 2 - unitY * edgeFactor;
+    const x2 = fw.end.x * cellSize + gridOriginX + cellSize / 2 + unitX * edgeFactor;
+    const y2 = fw.end.y * cellSize + gridOriginY + cellSize / 2 + unitY * edgeFactor;
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+
+    ctx.translate(midX, midY);
+    ctx.rotate(angle);
+    drawRoundedRect(ctx, -dist / 2, -answerRibbonThickness / 2, dist, answerRibbonThickness, answerRibbonThickness / 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  /** ひと言探し（pickup）のみ玉＋細道。それ以外は従来のカプセル帯 */
+  const paintAnswerRibbonOnCtx = (
+    ctx: CanvasRenderingContext2D,
+    fw: GameState['foundWords'][number],
+    cellSize: number,
+    gridOriginX: number,
+    gridOriginY: number,
+    answerRibbonThickness: number,
+    ribbonExtension: number,
+    pickupBeadRibbon: boolean,
+  ) => {
+    if (pickupBeadRibbon) {
+      paintFoundBeadRibbonOnCtx(ctx, fw, cellSize, gridOriginX, gridOriginY);
+      return;
+    }
+    paintFoundRibbonOnCtx(
+      ctx,
+      fw,
+      cellSize,
+      gridOriginX,
+      gridOriginY,
+      answerRibbonThickness,
+      ribbonExtension,
+    );
+  };
+
+  const paintLetterCellOnCtx = (
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    gs: GameState,
+    cellSize: number,
+    gridOriginX: number,
+    gridOriginY: number,
+    displayFontSize: number,
+    boardFont: string,
+    isFound: boolean,
+    revealAnswers: boolean,
+    cellOnAnyPlacedOccurrence: (gx: number, gy: number) => boolean,
+    paletteOrange700: string,
+    paletteSlate800: string,
+    paletteWhite: string,
+    paletteGlyphStrokeOnFound: string,
+    paletteGlyphStrokeOnReveal: string,
+  ) => {
+    const cx = x * cellSize + gridOriginX + cellSize / 2;
+    const cy = y * cellSize + gridOriginY + cellSize / 2;
+    const char = gs.grid[y]?.[x];
+    if (char == null) return;
+    const displayChar = gs.category?.isKanji
+      ? char
+      : gs.isKatakana
+        ? convertToKatakana(char)
+        : convertToHiragana(char);
+    const strokeW = Math.max(2, displayFontSize * 0.1);
+    ctx.font = boardFont;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (isFound) {
+      ctx.fillStyle = paletteWhite;
+      ctx.lineWidth = strokeW;
+      ctx.strokeStyle = paletteGlyphStrokeOnFound;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(displayChar, cx, cy);
+      ctx.fillText(displayChar, cx, cy);
+    } else if (revealAnswers && cellOnAnyPlacedOccurrence(x, y)) {
+      ctx.fillStyle = paletteOrange700;
+      ctx.lineWidth = Math.max(1.5, displayFontSize * 0.07);
+      ctx.strokeStyle = paletteGlyphStrokeOnReveal;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(displayChar, cx, cy);
+      ctx.fillText(displayChar, cx, cy);
+    } else {
+      ctx.fillStyle = paletteSlate800;
+      ctx.fillText(displayChar, cx, cy);
+    }
+  };
+
+  const syncHundredCoopBaseLayer = (
+    baseCtx: CanvasRenderingContext2D,
+    gs: GameState,
+    layout: typeof layoutRef.current,
+    revealAnswers: boolean,
+    paletteWhite: string,
+    paletteOrange700: string,
+    paletteSlate800: string,
+    paletteGlyphStrokeOnFound: string,
+    paletteGlyphStrokeOnReveal: string,
+  ) => {
+    const { cellSize, gridOriginX, gridOriginY, boardWidth, boardHeight } = layout;
+    const baseFontSize = cellSize * 0.65;
+    const displayFontSize = baseFontSize * 1.2;
+    const boardFont = `500 ${displayFontSize}px "M PLUS Rounded 1c"`;
+    const answerRibbonThickness = cellSize * 0.85 * 0.9;
+    const ribbonExtension = 0;
+    const pickupBeadRibbon = gs.category?.category === 'pickup';
+    const boardKey = `${gs.actualSeed ?? ''}|${gs.grid.length}|${boardWidth}|${boardHeight}|${revealAnswers ? 1 : 0}|${pickupBeadRibbon ? 'bead' : 'capsule'}`;
+    const foundLen = gs.foundWords.length;
+    const needsFull =
+      boardKey !== baseLayerBoardKeyRef.current
+      || foundLen < baseLayerFoundCountRef.current
+      || forceDrawRef.current;
+
+    const cellOnAnyPlacedOccurrence = (gx: number, gy: number) => {
+      for (const pw of gs.placedWords || []) {
+        for (const occ of pw.occurrences || []) {
+          if (isPointOnSegment(gx, gy, occ.start, occ.end)) return true;
+        }
+      }
+      return false;
+    };
+
+    const cellIsFound = (gx: number, gy: number) => {
+      for (let i = 0; i < gs.foundWords.length; i++) {
+        const fw = gs.foundWords[i];
+        if (isPointOnSegment(gx, gy, fw.start, fw.end)) return true;
+      }
+      return false;
+    };
+
+    if (needsFull) {
+      baseCtx.fillStyle = paletteWhite;
+      baseCtx.fillRect(0, 0, boardWidth, boardHeight);
+      gs.foundWords.forEach((fw) => {
+        paintAnswerRibbonOnCtx(
+          baseCtx,
+          fw,
+          cellSize,
+          gridOriginX,
+          gridOriginY,
+          answerRibbonThickness,
+          ribbonExtension,
+          pickupBeadRibbon,
+        );
+      });
+      gs.grid.forEach((row, y) => {
+        row.forEach((_char, x) => {
+          paintLetterCellOnCtx(
+            baseCtx,
+            x,
+            y,
+            gs,
+            cellSize,
+            gridOriginX,
+            gridOriginY,
+            displayFontSize,
+            boardFont,
+            cellIsFound(x, y),
+            revealAnswers,
+            cellOnAnyPlacedOccurrence,
+            paletteOrange700,
+            paletteSlate800,
+            paletteWhite,
+            paletteGlyphStrokeOnFound,
+            paletteGlyphStrokeOnReveal,
+          );
+        });
+      });
+      baseLayerFoundCountRef.current = foundLen;
+      baseLayerBoardKeyRef.current = boardKey;
+      return;
+    }
+
+    if (foundLen <= baseLayerFoundCountRef.current) return;
+
+    const newFound = gs.foundWords.slice(baseLayerFoundCountRef.current);
+    const touchedCells = new Set<string>();
+    newFound.forEach((fw) => {
+      paintAnswerRibbonOnCtx(
+        baseCtx,
+        fw,
+        cellSize,
+        gridOriginX,
+        gridOriginY,
+        answerRibbonThickness,
+        ribbonExtension,
+        pickupBeadRibbon,
+      );
+      if (!fw.start || !fw.end) return;
+      enumerateSegmentCells(fw.start, fw.end).forEach((cell) => {
+        touchedCells.add(`${cell.x},${cell.y}`);
+      });
+    });
+    touchedCells.forEach((key) => {
+      const [xs, ys] = key.split(',');
+      const gx = Number(xs);
+      const gy = Number(ys);
+      if (!Number.isFinite(gx) || !Number.isFinite(gy)) return;
+      paintLetterCellOnCtx(
+        baseCtx,
+        gx,
+        gy,
+        gs,
+        cellSize,
+        gridOriginX,
+        gridOriginY,
+        displayFontSize,
+        boardFont,
+        true,
+        revealAnswers,
+        cellOnAnyPlacedOccurrence,
+        paletteOrange700,
+        paletteSlate800,
+        paletteWhite,
+        paletteGlyphStrokeOnFound,
+        paletteGlyphStrokeOnReveal,
+      );
+    });
+    baseLayerFoundCountRef.current = foundLen;
+  };
+
   const draw = useCallback(() => {
     try {
       const now = Date.now();
@@ -887,7 +1633,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
       const currentLayout = layoutRef.current;
       const currentGameState = gameStateRef.current;
-      const { cellSize, padding, boardWidth, boardHeight } = currentLayout;
+      const { cellSize, gridOriginX, gridOriginY, boardWidth, boardHeight } = currentLayout;
       // Mobile layout can be 0 for a moment while UI settles.
       // Keep the RAF loop alive so we recover automatically.
       if (cellSize <= 0 || boardWidth <= 0 || boardHeight <= 0) {
@@ -901,52 +1647,115 @@ const GameScreen: React.FC<GameScreenProps> = ({
     const paletteWhite = rkCssColor('--rk-white', 'rgb(255 255 255)');
     const paletteGlyphStrokeOnFound = rkCssColor('--rk-board-glyph-stroke-on-found', 'rgb(15 23 42 / 0.32)');
     const paletteGlyphStrokeOnReveal = rkCssColor('--rk-board-glyph-stroke-on-reveal', 'rgb(255 255 255 / 0.92)');
-    ctx.fillStyle = paletteWhite;
-    ctx.fillRect(0, 0, boardWidth, boardHeight);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    
     const baseFontSize = cellSize * 0.65;
     const displayFontSize = baseFontSize * 1.2;
     const boardFont = `500 ${displayFontSize}px "M PLUS Rounded 1c"`;
-
-    const ribbonThickness = cellSize * 0.85;
+    const hintRibbonThickness = cellSize * 0.85;
+    /** 正解帯（ことば探し・ひと言探し・ロボ常設共通）。従来比 1 割細く */
+    const answerRibbonThickness = cellSize * 0.85 * 0.9;
     const ribbonExtension = 0;
+    const pickupBeadRibbon = currentGameState.category?.category === 'pickup';
+    const revealAnswers = showAnswersRef.current;
 
-    // 2. Layer: Correct Bands (Thick Strikethrough)
-      currentGameState.foundWords.forEach(fw => {
-      if (!fw.start || !fw.end) return;
-      ctx.save();
-      ctx.globalAlpha = 0.9; 
-      ctx.fillStyle = fw.color;
+    let useBaseLayer = hundredCoopRef.current;
+    if (useBaseLayer) {
+      let base = baseLayerCanvasRef.current;
+      if (!base) {
+        base = document.createElement('canvas');
+        baseLayerCanvasRef.current = base;
+      }
+      if (base.width !== boardWidth || base.height !== boardHeight) {
+        base.width = boardWidth;
+        base.height = boardHeight;
+        baseLayerFoundCountRef.current = 0;
+        baseLayerBoardKeyRef.current = '';
+      }
+      const baseCtx = base.getContext('2d');
+      if (baseCtx) {
+        syncHundredCoopBaseLayer(
+          baseCtx,
+          currentGameState,
+          currentLayout,
+          revealAnswers,
+          paletteWhite,
+          paletteOrange700,
+          paletteSlate800,
+          paletteGlyphStrokeOnFound,
+          paletteGlyphStrokeOnReveal,
+        );
+        ctx.drawImage(base, 0, 0);
+      } else {
+        useBaseLayer = false;
+      }
+    }
 
-      const dx = fw.end.x - fw.start.x;
-      const dy = fw.end.y - fw.start.y;
-      const distInCells = Math.max(Math.abs(dx), Math.abs(dy));
-      
-      const unitX = distInCells === 0 ? 0 : (dx === 0 ? 0 : dx / distInCells);
-      const unitY = distInCells === 0 ? 1 : (dy === 0 ? 0 : dy / distInCells);
+    if (!useBaseLayer) {
+      ctx.fillStyle = paletteWhite;
+      ctx.fillRect(0, 0, boardWidth, boardHeight);
 
-      const isDiagonal = unitX !== 0 && unitY !== 0;
-      const edgeFactor = isDiagonal ? (cellSize / 2) * 0.75 : (cellSize / 2) + ribbonExtension;
-      const x1 = fw.start.x * cellSize + padding + (cellSize / 2) - (unitX * edgeFactor);
-      const y1 = fw.start.y * cellSize + padding + (cellSize / 2) - (unitY * edgeFactor);
-      const x2 = fw.end.x * cellSize + padding + (cellSize / 2) + (unitX * edgeFactor);
-      const y2 = fw.end.y * cellSize + padding + (cellSize / 2) + (unitY * edgeFactor);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
 
-      const midX = (x1 + x2) / 2;
-      const midY = (y1 + y2) / 2;
-      const angle = Math.atan2(y2 - y1, x2 - x1);
-      const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+      // 2. Layer: Correct Bands (Thick Strikethrough)
+      currentGameState.foundWords.forEach((fw) => {
+        paintAnswerRibbonOnCtx(
+          ctx,
+          fw,
+          cellSize,
+          gridOriginX,
+          gridOriginY,
+          answerRibbonThickness,
+          ribbonExtension,
+          pickupBeadRibbon,
+        );
+      });
 
-      ctx.translate(midX, midY);
-      ctx.rotate(angle);
-      
-      drawRoundedRect(ctx, -dist / 2, -ribbonThickness / 2, dist, ribbonThickness, ribbonThickness / 2);
-      ctx.fill();
-      ctx.restore();
-    });
+      // 4. Layer: Letters
+      ctx.font = boardFont;
+
+      const cellOnAnyPlacedOccurrence = (gx: number, gy: number) => {
+        for (const pw of currentGameState.placedWords || []) {
+          for (const occ of pw.occurrences || []) {
+            if (isPointOnSegment(gx, gy, occ.start, occ.end)) return true;
+          }
+        }
+        return false;
+      };
+
+      currentGameState.grid.forEach((row, y) => {
+        row.forEach((char, x) => {
+          let isFound = false;
+          for (let i = 0; i < currentGameState.foundWords.length; i++) {
+            if (isPointOnSegment(x, y, currentGameState.foundWords[i].start, currentGameState.foundWords[i].end)) {
+              isFound = true;
+              break;
+            }
+          }
+          paintLetterCellOnCtx(
+            ctx,
+            x,
+            y,
+            currentGameState,
+            cellSize,
+            gridOriginX,
+            gridOriginY,
+            displayFontSize,
+            boardFont,
+            isFound,
+            revealAnswers,
+            cellOnAnyPlacedOccurrence,
+            paletteOrange700,
+            paletteSlate800,
+            paletteWhite,
+            paletteGlyphStrokeOnFound,
+            paletteGlyphStrokeOnReveal,
+          );
+        });
+      });
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
 
       // 3. Layer: Hint Highlight
       const hint = hintWordRef.current;
@@ -986,10 +1795,10 @@ const GameScreen: React.FC<GameScreenProps> = ({
             ? (cellSize / 2) * 0.75
             : (cellSize / 2) + ribbonExtension;
 
-      const ex = (distInCells === 0 ? hint.start.x : hint.end.x) * cellSize + padding + (cellSize / 2);
-      const ey = (distInCells === 0 ? hint.start.y : hint.end.y) * cellSize + padding + (cellSize / 2);
-      const sx = hint.start.x * cellSize + padding + (cellSize / 2);
-      const sy = hint.start.y * cellSize + padding + (cellSize / 2);
+      const ex = (distInCells === 0 ? hint.start.x : hint.end.x) * cellSize + gridOriginX + (cellSize / 2);
+      const ey = (distInCells === 0 ? hint.start.y : hint.end.y) * cellSize + gridOriginY + (cellSize / 2);
+      const sx = hint.start.x * cellSize + gridOriginX + (cellSize / 2);
+      const sy = hint.start.y * cellSize + gridOriginY + (cellSize / 2);
 
       const x1 = sx - unitX * edgeFactor;
       const y1 = sy - unitY * edgeFactor;
@@ -1004,64 +1813,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
       ctx.translate(midX, midY);
       ctx.rotate(angle);
 
-      const currentThickness = ribbonThickness * (1 + pulse * 0.1);
+      const currentThickness = hintRibbonThickness * (1 + pulse * 0.1);
       drawRoundedRect(ctx, -dist / 2, -currentThickness / 2, dist, currentThickness, currentThickness / 2);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
     }
-
-    // 4. Layer: Letters
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = boardFont;
-
-    const cellOnAnyPlacedOccurrence = (gx: number, gy: number) => {
-      for (const pw of currentGameState.placedWords || []) {
-        for (const occ of pw.occurrences || []) {
-          if (isPointOnSegment(gx, gy, occ.start, occ.end)) return true;
-        }
-      }
-      return false;
-    };
-
-    const revealAnswers = showAnswersRef.current;
-    currentGameState.grid.forEach((row, y) => {
-      row.forEach((char, x) => {
-        const cx = x * cellSize + padding + cellSize / 2;
-        const cy = y * cellSize + padding + cellSize / 2;
-        
-        let isFound = false;
-        for (let i = 0; i < currentGameState.foundWords.length; i++) {
-          if (isPointOnSegment(x, y, currentGameState.foundWords[i].start, currentGameState.foundWords[i].end)) {
-            isFound = true;
-            break;
-          }
-        }
-
-        const displayChar = currentGameState.category?.isKanji ? char : (currentGameState.isKatakana ? convertToKatakana(char) : convertToHiragana(char));
-        const strokeW = Math.max(2, displayFontSize * 0.1);
-
-        if (isFound) {
-          ctx.fillStyle = paletteWhite;
-          ctx.lineWidth = strokeW;
-          ctx.strokeStyle = paletteGlyphStrokeOnFound;
-          ctx.lineJoin = 'round';
-          ctx.strokeText(displayChar, cx, cy);
-          ctx.fillText(displayChar, cx, cy);
-        } else if (revealAnswers && cellOnAnyPlacedOccurrence(x, y)) {
-          ctx.fillStyle = paletteOrange700;
-          ctx.lineWidth = Math.max(1.5, displayFontSize * 0.07);
-          ctx.strokeStyle = paletteGlyphStrokeOnReveal;
-          ctx.lineJoin = 'round';
-          ctx.strokeText(displayChar, cx, cy);
-          ctx.fillText(displayChar, cx, cy);
-        } else {
-          ctx.fillStyle = paletteSlate800;
-          ctx.fillText(displayChar, cx, cy);
-        }
-      });
-    });
 
     // 5. Layer: Selection Highlight (Green Circles)
     const sel = activeSelectionRef.current;
@@ -1077,8 +1834,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
       const unitY = distInCells === 0 ? 1 : (dy === 0 ? 0 : dy / distInCells);
 
       for (let i = 0; i <= distInCells; i++) {
-        const cx = (sel.start.x + unitX * i) * cellSize + padding + cellSize / 2;
-        const cy = (sel.start.y + unitY * i) * cellSize + padding + cellSize / 2;
+        const cx = (sel.start.x + unitX * i) * cellSize + gridOriginX + cellSize / 2;
+        const cy = (sel.start.y + unitY * i) * cellSize + gridOriginY + cellSize / 2;
         ctx.beginPath();
         ctx.arc(cx, cy, cellSize * 0.45, 0, Math.PI * 2);
         ctx.fill();
@@ -1138,6 +1895,15 @@ const GameScreen: React.FC<GameScreenProps> = ({
       }),
     [gameState.boardRows, gameState.difficulty, gameState.grid],
   );
+
+  const adultChallengeShareUrl = React.useMemo(() => {
+    if (!isSoloClear || searchModeTimedOut || gameState.actualSeed === undefined) return null;
+    if (hundredCoop) {
+      return buildSamePuzzleChallengeUrlFromGameState(gameState, gridCols, gridRows, { hundredPickup: true });
+    }
+    return buildSamePuzzleChallengeUrlFromGameState(gameState, gridCols, gridRows);
+  }, [gameState, gridCols, gridRows, hundredCoop, isSoloClear, searchModeTimedOut]);
+
   const isRectBoard = gridCols !== gridRows;
 
   // ことば拾いは「出現回数」をカウント（同じ単語を何回も拾う）。方向スキャンの重複は1マス1回。
@@ -1154,6 +1920,55 @@ const GameScreen: React.FC<GameScreenProps> = ({
     return countPlacedWordOccurrences(gameState.placedWords);
   }, [gameState.placedWords, countByOccurrence]);
 
+  /** 5分放置 → らくだロボが粛々とクリアまで（みんなであそぶは1人のときだけ） */
+  const kotobaRoboIdleEnabled = React.useMemo(() => {
+    if (isMultiplay) return false;
+    if (searchCountdownActive) return false;
+    if (hundredCoop && hundredRoster.length > 1) return false;
+    if (!gameState.placedWords?.length) return false;
+    const cat = gameState.category?.category;
+    if (cat === 'pickup') return true;
+    if (gameState.gameMode === 'search' || gameState.gameMode === 'normal') return true;
+    return false;
+  }, [
+    gameState.category?.category,
+    gameState.gameMode,
+    gameState.placedWords?.length,
+    hundredCoop,
+    hundredRoster.length,
+    isMultiplay,
+    searchCountdownActive,
+  ]);
+
+  const handleRoboFind = useCallback(
+    (word: string, start: Point, end: Point) => {
+      onUpdateFound(word, start, end, false, { robo: true });
+    },
+    [onUpdateFound],
+  );
+
+  const roboIdleToastShownRef = useRef(false);
+  const { roboIdleActive } = useKotobaRoboIdleFinish({
+    enabled: kotobaRoboIdleEnabled,
+    isFinished,
+    startCountdown,
+    countByOccurrence,
+    placedWords: gameState.placedWords,
+    foundWords: gameState.foundWords,
+    onRoboFind: handleRoboFind,
+    getLastActivityMs: () => lastUserPointerAtMsRef.current,
+    onRoboStarted: () => {
+      if (roboIdleToastShownRef.current) return;
+      roboIdleToastShownRef.current = true;
+      showToast(`${RAKUDA_ROBO_EMOJI} ${RAKUDA_ROBO_NAME}がそばで続けています`);
+    },
+  });
+
+  useEffect(() => {
+    if (!isFinished) return;
+    roboIdleToastShownRef.current = false;
+  }, [isFinished, gameState.actualSeed]);
+
   // Safety: never show "8/7" etc even if data gets temporarily inconsistent.
   // Also use this for clear/progress so gameplay doesn't break.
   const safeFoundCount = React.useMemo(() => {
@@ -1167,9 +1982,14 @@ const GameScreen: React.FC<GameScreenProps> = ({
     if (joinedFoundBaselineRef.current !== null) return;
 
     joinedBaselineTimerRef.current = window.setTimeout(() => {
-      joinedFoundBaselineRef.current = safeFoundCount;
+      // 参加直後にすでに全問見つけ済みだと baseline=total になりクリア演出が永遠に出ない → 1つ手前にずらす
+      joinedFoundBaselineRef.current =
+        totalCount > 0 && safeFoundCount >= totalCount
+          ? Math.max(0, totalCount - 1)
+          : safeFoundCount;
       lastFoundWordsCount.current = gameState.foundWords.length;
       joinedBaselineTimerRef.current = null;
+      setJoinedBaselineLockTick((n) => n + 1);
     }, 800);
 
     return () => {
@@ -1184,6 +2004,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
     gameState.placedWords.length,
     gameState.difficulty,
     safeFoundCount,
+    totalCount,
     gameState.foundWords.length,
   ]);
 
@@ -1192,11 +2013,12 @@ const GameScreen: React.FC<GameScreenProps> = ({
     audioService.noteUserGesture();
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
+    lastUserPointerAtMsRef.current = Date.now();
     setHintWord(null);
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const x = Math.floor((e.clientX - rect.left - layout.padding) / layout.cellSize);
-    const y = Math.floor((e.clientY - rect.top - layout.padding) / layout.cellSize);
+    const x = Math.floor((e.clientX - rect.left - layout.gridOriginX) / layout.cellSize);
+    const y = Math.floor((e.clientY - rect.top - layout.gridOriginY) / layout.cellSize);
     if (x >= 0 && x < gridCols && y >= 0 && y < gridRows) {
       const point = { x, y };
       selectionRef.current = { start: point, end: point };
@@ -1208,10 +2030,11 @@ const GameScreen: React.FC<GameScreenProps> = ({
     if (!selectionRef.current.start) return;
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
+    lastUserPointerAtMsRef.current = Date.now();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const x = Math.floor((e.clientX - rect.left - layout.padding) / layout.cellSize);
-    const y = Math.floor((e.clientY - rect.top - layout.padding) / layout.cellSize);
+    const x = Math.floor((e.clientX - rect.left - layout.gridOriginX) / layout.cellSize);
+    const y = Math.floor((e.clientY - rect.top - layout.gridOriginY) / layout.cellSize);
     const gs = gameStateRef.current;
     const cols = resolveBoardCols({
       boardCols: gs.boardCols,
@@ -1237,6 +2060,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
   const handlePointerUp = useCallback(() => {
     forceDrawRef.current = true;
     lastActivityAtMsRef.current = Date.now();
+    lastUserPointerAtMsRef.current = Date.now();
     const sel = selectionRef.current;
     if (!sel.start || !sel.end) {
       setActiveSelection({ start: null, end: null });
@@ -1307,14 +2131,17 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
         setStreakCount((s) => s + 1);
         onUpdateFound(pw.word, occ.start, occ.end);
-        audioService.playCorrectSound();
+        if (!hundredCoop) {
+          audioService.noteUserGesture();
+          audioService.playCorrectSound();
+        }
 
         const rect = canvasRef.current?.getBoundingClientRect();
         if (rect) {
           const px =
-            ((occ.start.x + occ.end.x) / 2) * layout.cellSize + layout.cellSize / 2 + layout.padding;
+            ((occ.start.x + occ.end.x) / 2) * layout.cellSize + layout.cellSize / 2 + layout.gridOriginX;
           const py =
-            ((occ.start.y + occ.end.y) / 2) * layout.cellSize + layout.cellSize / 2 + layout.padding;
+            ((occ.start.y + occ.end.y) / 2) * layout.cellSize + layout.cellSize / 2 + layout.gridOriginY;
 
           const colorIdx = gameState.foundWords.length % rkBandColorCount();
           const color = rkResolvedBandColor(colorIdx);
@@ -1352,13 +2179,16 @@ const GameScreen: React.FC<GameScreenProps> = ({
           }
           setStreakCount((s) => s + 1);
           onUpdateFound(pw.word, sel.start, sel.end);
-          audioService.playCorrectSound();
+          if (!hundredCoop) {
+            audioService.noteUserGesture();
+            audioService.playCorrectSound();
+          }
         }
       }
     }
     selectionRef.current = { start: null, end: null };
     setActiveSelection({ start: null, end: null });
-  }, [gameState, layout, streakCount, onUpdateFound, safeFoundCount, totalCount, showAnswers]);
+  }, [gameState, layout, streakCount, onUpdateFound, safeFoundCount, totalCount, showAnswers, hundredCoop]);
 
   useEffect(() => {
     window.addEventListener('pointermove', handlePointerMove);
@@ -1392,20 +2222,92 @@ const GameScreen: React.FC<GameScreenProps> = ({
     }
   }, [safeFoundCount, totalCount, isFinished]);
 
-  /** 全問クリア直後：ことば探し・みんなであそぶ共通。ラストワンと同系の飛び出し演出（非表示はアニメ終了時） */
+  /** ロボ常設: 全問クリアをスナップショットで固定（他端末の「次のお題」で結果が消えない） */
   useEffect(() => {
-    if (!foundProgressAfterJoin(safeFoundCount)) return;
+    if (!isRoboPickupLounge || roboLoungeClearSnapshot) return;
+    if (totalCount <= 0 || safeFoundCount < totalCount) return;
+    const targetWord = displaySearchWord;
+    const snap: RoboLoungeClearSnapshot = {
+      targetWord,
+      foundWords: [...gameState.foundWords],
+    };
+    setRoboLoungeClearSnapshot(snap);
+    activateRoboLoungeResultsHold(targetWord);
+  }, [
+    isRoboPickupLounge,
+    roboLoungeClearSnapshot,
+    safeFoundCount,
+    totalCount,
+    displaySearchWord,
+    gameState.foundWords,
+  ]);
+
+  /** 全問クリア直後：ロボ常設は横スクロール演出を省略（結果画面を最優先） */
+  useEffect(() => {
+    if (!isRoboPickupLounge) return;
+    if (!roboLoungeClearSnapshot || isFinished) return;
+    setShowLastOneBonus(false);
+    setShowClearFlyBonus(false);
+  }, [isRoboPickupLounge, roboLoungeClearSnapshot, isFinished]);
+
+  /** 全問クリア直後：ことば探し・みんなであそぶ（ロボ常設以外） */
+  useEffect(() => {
+    if (isRoboPickupLounge) return;
     if (totalCount <= 0 || safeFoundCount !== totalCount || isFinished) return;
     setShowLastOneBonus(false);
     setShowClearFlyBonus(true);
     audioService.playBonusSound();
     return () => setShowClearFlyBonus(false);
-  }, [safeFoundCount, totalCount, isFinished]);
+  }, [safeFoundCount, totalCount, isFinished, isRoboPickupLounge, joinedBaselineLockTick]);
 
   useEffect(() => {
-    if (!foundProgressAfterJoin(safeFoundCount)) return;
-    if (totalCount <= 0 || safeFoundCount < totalCount || isFinished) return;
+    hundredRoomFinishSentRef.current = false;
+  }, [gameState.actualSeed, roomId]);
 
+  useEffect(() => {
+    hundredRoundCompleteRef.current =
+      isRoboPickupLounge
+        ? !!roboLoungeClearSnapshot
+        : totalCount > 0 && safeFoundCount === totalCount;
+  }, [isRoboPickupLounge, roboLoungeClearSnapshot, totalCount, safeFoundCount]);
+
+  // みんなであそぶ: クリア演出の待ち時間より先にルーム終了を Firestore へ（離脱しても一覧に残らない）
+  useEffect(() => {
+    if (!hundredCoop || isRoboPickupLounge || isFinished) return;
+    if (totalCount <= 0 || safeFoundCount !== totalCount) return;
+    if (hundredRoomFinishSentRef.current) return;
+    hundredRoomFinishSentRef.current = true;
+    void onHundredRoomFinished?.('cleared');
+  }, [
+    hundredCoop,
+    isRoboPickupLounge,
+    isFinished,
+    totalCount,
+    safeFoundCount,
+    onHundredRoomFinished,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (
+        hundredCoopRef.current &&
+        !isRoboPickupLoungeRef.current &&
+        hundredRoundCompleteRef.current &&
+        !hundredRoomFinishSentRef.current
+      ) {
+        hundredRoomFinishSentRef.current = true;
+        void onHundredRoomFinishedRef.current?.('cleared');
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const roundComplete = isRoboPickupLounge
+      ? !!roboLoungeClearSnapshot
+      : totalCount > 0 && safeFoundCount === totalCount;
+    if (!roundComplete || isFinished) return;
+
+    const delayMs = isRoboPickupLounge ? 0 : clearFlyModalDelayMsRef.current;
     const tid = window.setTimeout(() => {
       const gs = gameStateRef.current;
       const nextConsecutive = consecutiveClearsRef.current + 1;
@@ -1413,9 +2315,23 @@ const GameScreen: React.FC<GameScreenProps> = ({
       setDisplayConsecutiveClears(nextConsecutive);
       audioService.playFanfareSound();
       setIsSuccessFlashing(true);
-      if (hundredCoop) onHundredRoomFinished?.('cleared');
+      if (hundredCoop && gs.category?.category === 'pickup' && onHundredPickupClearInterstitial) {
+        void onHundredPickupClearInterstitial();
+      }
+      if (hundredCoop && isRoboPickupLounge) {
+        void (async () => {
+          if (onLeaveHundredRoom && !hundredClearAutoLeaveDoneRef.current) {
+            hundredClearAutoLeaveDoneRef.current = true;
+            await onLeaveHundredRoom();
+          }
+          await onRoboPickupLoungeAutoRefresh?.();
+        })();
+      } else if (hundredCoop && onLeaveHundredRoom && !hundredClearAutoLeaveDoneRef.current) {
+        hundredClearAutoLeaveDoneRef.current = true;
+        void onLeaveHundredRoom();
+      }
 
-      onClear();
+      if (!isRoboPickupLounge) onClear();
 
       const durationSec = (Date.now() - startTimeRef.current) / 1000;
       const m = Math.floor(durationSec / 60);
@@ -1446,14 +2362,23 @@ const GameScreen: React.FC<GameScreenProps> = ({
         },
         category: gs.category // Add category object for App.tsx fallback
       });
-    }, clearFlyModalDelayMsRef.current);
+    }, delayMs);
 
     return () => window.clearTimeout(tid);
     // 最後の正解から、クリア横スクロール終了直後にクリアモーダル（所要時間はラストワンと同じ px/s に合わせた clearFlyModalDelayMs）。deps は最小にする。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- コールバックは ref / 安定参照で遅延内取得
-  }, [safeFoundCount, totalCount, isFinished]);
+  }, [
+    safeFoundCount,
+    totalCount,
+    isFinished,
+    isRoboPickupLounge,
+    roboLoungeClearSnapshot,
+    joinedBaselineLockTick,
+  ]);
 
   const handleHint = () => {
+    if (hundredCoop && !pickupHintButtonVisible) return;
+
     const normWord = (w: string) => convertToHiragana(String(w ?? '').trim());
 
     const unfoundOccurrences: { word: string; start: Point; end: Point }[] = [];
@@ -1530,23 +2455,49 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
   const progress = Math.min((safeFoundCount / (totalCount || 1)) * 100, 100);
 
+  const [gridLoadStuck, setGridLoadStuck] = useState(false);
+  const waitingForHundredBoard =
+    hundredCoop &&
+    (!gameState.grid || gameState.grid.length === 0) &&
+    (showHundredHostStart || showHundredGuestWait);
+  useEffect(() => {
+    if (gameState.grid?.length) {
+      setGridLoadStuck(false);
+      return;
+    }
+    if (waitingForHundredBoard) {
+      setGridLoadStuck(false);
+      return;
+    }
+    const tid = window.setTimeout(() => setGridLoadStuck(true), 8_000);
+    return () => window.clearTimeout(tid);
+  }, [gameState.grid, waitingForHundredBoard]);
+
   if (!gameState.grid || gameState.grid.length === 0) {
+    if (hundredCoop) {
+      return null;
+    }
+
+    const handleLoadingBack = () => {
+      void onBack();
+    };
+
     return (
-      <div
-        className={`relative flex flex-col h-full w-full items-center justify-center overflow-hidden ${
-          hundredCoop
-            ? 'bg-gradient-to-b from-[var(--rk-game-parchment-from)] via-[var(--rk-game-parchment-via)] to-[var(--rk-game-parchment-to)]'
-            : 'rk-bg-game-solo-shell'
-        }`}
-      >
-        <RakudaFloatingBackdrop variant={hundredCoop ? 'minna' : 'kotoba'} />
-        <div
-          className={`relative z-10 w-16 h-16 border-4 rounded-xl animate-pulse mb-4 ${
-            hundredCoop ? 'border-rk-red-300' : 'border-rk-amber-300'
-          }`}
-        ></div>
+      <div className="relative flex flex-col h-full w-full items-center justify-center overflow-hidden rk-bg-game-solo-shell">
+        <RakudaFloatingBackdrop variant="kotoba" />
+        <div className="relative z-10 w-16 h-16 border-4 rounded-xl animate-pulse mb-4 border-rk-amber-300" />
         <p className="relative z-10 font-medium text-rk-slate-700 text-sm">パズルを読み込み中...</p>
-        <p className="relative z-10 text-rk-slate-600 text-xs mt-2">しばらくお待ちください</p>
+        <p className="relative z-10 text-rk-slate-600 text-xs mt-2 px-6 text-center">しばらくお待ちください</p>
+        {gridLoadStuck ? (
+          <div className="relative z-10 mt-6 flex flex-col items-center gap-2 px-6">
+            <p className="text-xs text-rk-slate-500 text-center leading-relaxed">
+              時間がかかっています。いったんもどってもう一度お試しください。
+            </p>
+            <button type="button" className={btnGhost} onClick={handleLoadingBack}>
+              もどる
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1557,18 +2508,49 @@ const GameScreen: React.FC<GameScreenProps> = ({
       ? ''
       : getCategoryDisplayTitle(String(gameState.category?.title || ''), language, gameState.isKatakana);
   const kotobaCategoryTitleMultiline = kotobaCategoryTitleDisplayed.includes('\n');
+  /** iPad ソロ: ヘッダー・下ボタンを詰めて盤面領域を確保（実幅レイアウト） */
+  const tabletSolo = !hundredCoop && isTabletTouchLayout();
   return (
     <div
+      style={{
+        paddingTop: hundredCoop ? undefined : tabletSolo ? 4 : 8,
+        paddingBottom: hundredCoop ? 4 : tabletSolo ? 4 : 8,
+        fontFamily: '"M PLUS Rounded 1c", sans-serif',
+      }}
       className={`flex flex-col h-full min-h-0 w-full select-none relative items-center ${
         hundredCoop
-          ? // hundredCoop: reserve bottom banner space too (otherwise hint button can hide under ads)
-            'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)] bg-gradient-to-b from-[var(--rk-game-parchment-from)] via-[var(--rk-game-parchment-via)] to-[var(--rk-game-parchment-to)]'
-          : // Solo: flex でヘッダー・盤面・下ボタンを1画面に収める（盤面は mainContentRef 内で縮小）
-            'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)) rk-bg-game-solo-shell'
+          ? 'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)] bg-gradient-to-b from-[var(--rk-game-parchment-from)] via-[var(--rk-game-parchment-via)] to-[var(--rk-game-parchment-to)] pt-[max(0.25rem,env(safe-area-inset-top))]'
+          : 'overflow-hidden justify-between pb-[calc(var(--rk-bottom-banner,0px)+env(safe-area-inset-bottom)+12px)) rk-bg-game-solo-shell'
       }`}
-      style={{ paddingTop: hundredCoop ? 4 : 8, paddingBottom: hundredCoop ? 4 : 8, fontFamily: '"M PLUS Rounded 1c", sans-serif' }}
     >
-      <RakudaFloatingBackdrop variant={hundredCoop ? 'minna' : 'kotoba'} />
+      <RakudaFloatingBackdrop
+        variant={hundredCoop ? 'minna' : 'kotoba'}
+        className={hundredCoop ? 'max-md:hidden' : ''}
+      />
+
+      {adminStreamLiveBadgeControl && hundredCoop && !isFinished ? (
+        <button
+          type="button"
+          onClick={() => {
+            vibrate(10);
+            onToggleStreamLiveBadge?.();
+          }}
+          disabled={!onToggleStreamLiveBadge}
+          aria-pressed={streamLiveBadgeEnabled}
+          aria-label={
+            streamLiveBadgeEnabled
+              ? `${RK_STREAM_LIVE_BADGE_LABEL} ON — タップでOFF`
+              : `${RK_STREAM_LIVE_BADGE_LABEL} OFF — タップでON`
+          }
+          className={`fixed left-1/2 -translate-x-1/2 top-[max(0.35rem,env(safe-area-inset-top))] z-[60] px-5 py-1 rounded-lg border-4 text-[22px] md:text-2xl font-black tracking-wide whitespace-nowrap select-none transition-colors active:scale-[0.98] disabled:opacity-40 ${
+            streamLiveBadgeEnabled
+              ? 'border-rk-red-600 bg-rk-red-600 text-rk-white shadow-lg'
+              : 'border-rk-slate-500/35 bg-rk-slate-700/20 text-rk-slate-600/65 shadow-sm'
+          }`}
+        >
+          {RK_STREAM_LIVE_BADGE_LABEL}
+        </button>
+      ) : null}
 
       <div
         className="pointer-events-none fixed left-0 top-0 -z-10 opacity-0 overflow-hidden"
@@ -1590,15 +2572,6 @@ const GameScreen: React.FC<GameScreenProps> = ({
         </span>
       </div>
 
-      {hundredCoop && !isFinished && isHundredHost && (
-        <button
-          type="button"
-          className="fixed top-[76px] right-3 z-[600] w-[68px] h-9 md:w-[84px] md:h-10 rounded-xl border-2 border-rk-rose-400 bg-rk-rose-300/95 backdrop-blur text-rk-rose-950 text-xs md:text-sm font-black shadow-sm active:scale-95 transition-transform flex items-center justify-center"
-          onClick={() => setShowHostInterruptConfirm(true)}
-        >
-          中断
-        </button>
-      )}
       {showLastOneBonus && (
         <div className="fixed inset-0 z-[300] pointer-events-none overflow-hidden">
           <motion.div
@@ -1709,7 +2682,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     <div className="text-[10px] text-rk-slate-400 mb-2 border-b border-rk-slate-100 pb-1 flex justify-between items-center">
                       <span>
                         {hundredCoop
-                          ? (language === 'ja' ? '参加者ランキング（見つけた数）' : 'Ranking')
+                          ? (language === 'ja' ? '参加者ランキング（この局の見つけた数）' : 'Ranking (this round)')
                           : isSyncMode
                             ? (language === 'ja' ? '見つけた人ランキング' : 'Top Finders')
                             : (language === 'ja' ? 'ゴール順位表' : 'Leaderboard')}
@@ -1720,7 +2693,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     </div>
                     <div className="flex flex-col gap-1 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
                       {hundredCoop ? (
-                        hundredRoster.map((p, idx) => (
+                        hundredRoundRanking.map((p, idx) => (
                           <div
                             key={p.uid}
                             className={`flex justify-between text-[11px] ${p.uid === userId ? `${RK_GATE_NICK_DISPLAY_CLASS} font-black` : 'text-rk-slate-600'}`}
@@ -1768,7 +2741,15 @@ const GameScreen: React.FC<GameScreenProps> = ({
             </div>
             
             <div className="flex flex-col gap-3 flex-shrink-0" style={{ paddingLeft: '15%', paddingRight: '15%' }}>
-              {hundredCoop && isKotobaHiroi && isHundredHost && onRakudaRoboReplay ? (
+              {!searchModeTimedOut && isSoloClear ? (
+                <LiveClearReportSoloPanel
+                  kind={isKotobaHiroi ? 'hitokoto' : 'kotoba'}
+                  showToast={showToast}
+                  vibrate={vibrate}
+                  adultChallengeShareUrl={adultChallengeShareUrl}
+                />
+              ) : null}
+              {showHundredRoboReplay ? (
                 <button
                   type="button"
                   disabled={roboReplayBusy}
@@ -1778,6 +2759,14 @@ const GameScreen: React.FC<GameScreenProps> = ({
                   {roboReplayBusy ? '準備中…' : `${RAKUDA_ROBO_EMOJI} らくだロボでもう一回`}
                 </button>
               ) : null}
+              {isFinished && showHundredHostStart ? (
+                <div className="w-full">{hundredHostStartButton}</div>
+              ) : null}
+              {isFinished && showHundredGuestWait ? (
+                <p className="text-sm font-medium text-rk-slate-600 text-center leading-snug px-2">
+                  前のお題はおわりました。次のお題を待っています。
+                </p>
+              ) : null}
               <button
                 type="button"
                 onClick={leaveFromClearScreen}
@@ -1785,9 +2774,9 @@ const GameScreen: React.FC<GameScreenProps> = ({
               >
                 {hundredCoop ? 'ひと言探しにもどる' : '問題一覧にもどる'}
               </button>
-              {hundredCoop && hundredRoster.length > 0 ? (
+              {hundredCoop && hundredRoundRanking.length > 0 ? (
                 <div className="flex items-center justify-center gap-1.5 mt-1 max-w-[220px] md:max-w-[420px] overflow-hidden">
-                  {hundredRoster.slice(0, 10).map((p) => (
+                  {hundredRoundRanking.slice(0, 10).map((p) => (
                     <span
                       key={p.uid}
                       title={p.name}
@@ -1796,8 +2785,8 @@ const GameScreen: React.FC<GameScreenProps> = ({
                       {compactMode ? '' : p.emoji}
                     </span>
                   ))}
-                  {hundredRoster.length > 10 ? (
-                    <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">+{hundredRoster.length - 10}</span>
+                  {hundredRoundRanking.length > 10 ? (
+                    <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">+{hundredRoundRanking.length - 10}</span>
                   ) : null}
                 </div>
               ) : null}
@@ -1806,20 +2795,161 @@ const GameScreen: React.FC<GameScreenProps> = ({
         </div>
       )}
 
-      <div className={`flex flex-col gap-2 px-4 w-full max-w-2xl flex-shrink-0 min-h-0 ${hundredCoop ? 'mb-0.5' : ''}`}>
-        <div className={`flex justify-between items-center relative ${hundredCoop ? 'min-h-[3.6rem] md:min-h-[4.4rem]' : 'min-h-[4.5rem] md:min-h-[6rem]'}`}>
-          <RK19QuietRoomBackButton
-            onClick={() => {
-              vibrate(10);
-              if (typeof onBackToTitle === 'function') {
-                void Promise.resolve(onBackToTitle());
-              } else {
-                onBack();
+      <div className={`relative z-10 flex flex-col gap-1.5 w-full max-w-3xl flex-shrink-0 min-h-0 ${hundredCoop ? 'mb-0 px-2' : 'gap-2 px-4 mb-0'}`}>
+        {hundredCoop ? (
+        <div className="flex flex-col gap-1.5 w-full">
+          <div className="flex items-start gap-1.5 w-full">
+            <RK19QuietRoomBackButton
+              onClick={handleHundredBoardBack}
+              title={
+                hundredCoop && !isFinished && isHundredHost ? '中断（募集も終了）' : 'もどる'
               }
-            }}
-          />
+            />
+            <div className="flex items-start gap-0.5 min-w-0 flex-1 leading-none pt-0.5">
+              <span className="font-black text-rk-amber-900/90 text-[20px] md:text-[24px] shrink-0 pointer-events-none select-none">
+                🔎
+              </span>
+              <div className="flex flex-col min-w-0">
+                <span className="font-black text-rk-amber-900/90 text-[17px] md:text-[24px] leading-tight pointer-events-none select-none">
+                  らくだ珈琲
+                </span>
+                <span className="mt-0.5 font-bold text-rk-amber-900/75 text-[14px] md:text-[18px] leading-tight pointer-events-none select-none">
+                  ひと言探し
+                </span>
+              </div>
+            </div>
+            {!isFinished && isHundredHost && !isRoboPickupLounge ? (
+              <div className="shrink-0 flex items-center gap-1.5">
+                {isKotobaHiroi ? (
+                  <button
+                    type="button"
+                    disabled={hintsToggleBusy}
+                    className={`w-[4.25rem] md:w-[5.25rem] h-9 md:h-10 rounded-xl border-2 text-xs md:text-sm font-black shadow-sm active:scale-95 transition-transform flex flex-col items-center justify-center leading-tight ${
+                      hundredHintsAllowed
+                        ? 'border-rk-sky-400 bg-rk-sky-200/95 text-rk-slate-800'
+                        : 'border-rk-slate-300 bg-rk-slate-100 text-rk-slate-500'
+                    } ${hintsToggleBusy ? 'opacity-60' : ''}`}
+                    onClick={() => void handleHostToggleHints()}
+                    aria-label={hundredHintsAllowed ? 'ヒントをオフにする' : 'ヒントをオンにする'}
+                    aria-pressed={hundredHintsAllowed}
+                  >
+                    <span className="text-sm leading-none">☝️</span>
+                    <span className="text-[10px] md:text-xs">{hundredHintsAllowed ? 'あり' : 'なし'}</span>
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="w-[4.25rem] md:w-[5.25rem] h-9 md:h-10 rounded-xl border-2 border-rk-rose-400 bg-rk-rose-300/95 text-rk-rose-950 text-xs md:text-sm font-black shadow-sm active:scale-95 transition-transform flex items-center justify-center"
+                  onClick={() => setShowHostInterruptConfirm(true)}
+                  aria-label="ゲームを中断する"
+                >
+                  中断
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div className="w-full flex items-center justify-center gap-2 bg-rk-white rounded-xl border border-rk-slate-200 shadow-sm px-2.5 py-1.5">
+            <span className="text-[21px] leading-none shrink-0">{gameState.category?.emoji}</span>
+            <div className="flex flex-col items-center justify-center text-center min-w-0 flex-1">
+              <div className="flex items-center justify-center gap-1 min-w-0 w-full">
+                <h3
+                  className={
+                    gameState.gameMode === 'search'
+                      ? `${pageTopHeadingClass} text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-full`
+                      : kotobaCategoryTitleMultiline
+                        ? 'text-xl md:text-2xl font-black tracking-tight leading-snug text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-full'
+                        : `${pageTopHeadingClass} text-rk-slate-800 text-center whitespace-pre-line break-words line-clamp-3 max-w-full`
+                  }
+                >
+                  {gameState.gameMode === 'search' ? (
+                    <>
+                      <span className="md:hidden">
+                        <span className="block">「{displaySearchWord}」</span>
+                        <span className="block">をさがせ！</span>
+                      </span>
+                      <span className="hidden md:inline">「{displaySearchWord}」をさがせ！</span>
+                    </>
+                  ) : (
+                    kotobaCategoryTitleDisplayed
+                  )}
+                </h3>
+                {gameState.category?.isKanji && (
+                  <span className="bg-rk-sky-50 text-rk-slate-700 text-[10px] px-2 py-1 rounded-xl border border-rk-sky-200 flex-shrink-0 shadow-sm">漢字</span>
+                )}
+              </div>
+              <div className="flex items-center justify-center gap-2 mt-0.5">
+                <span className="text-[14px] md:text-[18px] font-black text-rk-slate-700 tabular-nums leading-none text-center whitespace-nowrap">
+                  {gridCols}×{gridRows} {safeFoundCount}/{totalCount}
+                </span>
+              </div>
+            </div>
+          </div>
+          {!isFinished && (boardParticipants.length > 0 || hundredPresenceLine) ? (
+            <div className="w-full flex flex-col items-center gap-0.5 py-0.5" aria-label="参加者">
+              {hundredPresenceLine ? (
+                <p className="text-center text-[11px] font-medium text-rk-slate-600 leading-snug">
+                  {hundredPresenceLine}
+                </p>
+              ) : null}
+              {boardParticipants.length > 0 ? (
+                <div className="flex items-center justify-center gap-1.5 flex-wrap w-full">
+                  {boardParticipants.slice(0, 12).map((p) => {
+                    const isSelf = !!currentFirebaseUid && p.uid === currentFirebaseUid;
+                    return (
+                      <button
+                        type="button"
+                        key={p.uid}
+                        onClick={() => showBoardParticipantName(p.name, isSelf)}
+                        aria-label={`${p.name}の名前を表示`}
+                        className={`inline-flex h-[2.1rem] w-[2.1rem] md:h-[2.4rem] md:w-[2.4rem] items-center justify-center rounded-xl border bg-rk-white text-[1.2rem] md:text-[1.35rem] shadow-sm active:scale-95 transition-transform ${
+                          isSelf ? 'border-rk-primary ring-2 ring-rk-primary/40' : 'border-rk-slate-200'
+                        }`}
+                      >
+                        <RakudaGreenGateEmoji size="md" greenGate={greenGateByUid[p.uid]}>
+                          {p.emoji}
+                        </RakudaGreenGateEmoji>
+                      </button>
+                    );
+                  })}
+                  {boardParticipants.length > 12 ? (
+                    <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">
+                      +{boardParticipants.length - 12}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        ) : (
+        <div
+          className={`flex justify-between items-center relative ${
+            tabletSolo ? 'min-h-[3rem]' : 'min-h-[4.5rem] md:min-h-[6rem]'
+          }`}
+        >
+          <div className="flex gap-0.5 md:gap-1 shrink-0 z-10 min-w-0 max-w-[40%] sm:max-w-[34%] items-start">
+            <RK19QuietRoomBackButton
+              onClick={handleHundredBoardBack}
+              title="もどる"
+            />
+            <div className="flex items-start gap-0.5 min-w-0 leading-none">
+              <span className="font-black text-rk-amber-900/90 text-[24px] shrink-0 pointer-events-none select-none">
+                🔎
+              </span>
+              <div className="flex flex-col min-w-0">
+                <span className="font-black text-rk-amber-900/90 text-[24px] whitespace-nowrap pointer-events-none select-none">
+                  らくだ珈琲
+                </span>
+                <span className="mt-0.5 font-bold text-rk-amber-900/75 text-[17px] md:text-[18px] whitespace-nowrap pointer-events-none select-none">
+                  ことば探し
+                </span>
+              </div>
+            </div>
+          </div>
 
-          <div className={`absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-2 bg-rk-white rounded-xl border border-rk-slate-200 shadow-sm z-0 min-w-[220px] md:min-w-[340px] max-w-[calc(100%-7rem)] md:max-w-[calc(100%-8rem)] h-full ${hundredCoop ? 'px-2.5 py-1.5' : 'px-3 py-2'}`}>
+          <div
+            className={`absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-2 bg-rk-white rounded-xl border border-rk-slate-200 shadow-sm z-0 min-w-[200px] md:min-w-[340px] max-w-[calc(100%-5.5rem)] md:max-w-[calc(100%-8rem)] h-full ${tabletSolo ? 'px-2 py-1' : 'px-3 py-2'}`}
+          >
             <span className="text-[21px] leading-none">{gameState.category?.emoji}</span>
             <div className="flex flex-col items-center justify-center text-center">
               <div className="flex items-center justify-center gap-1">
@@ -1852,7 +2982,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                 <span className={`${hundredCoop ? 'text-[14px] md:text-[18px]' : 'text-[16px] md:text-[21px]'} font-black text-rk-slate-700 tabular-nums leading-none text-center whitespace-nowrap`}>
                   {gridCols}×{gridRows} {safeFoundCount}/{totalCount}
                 </span>
-                {gameState.gameMode === 'search' && gameState.category?.category === 'search' && (
+                {gameState.gameMode === 'search' && gameState.category?.category === 'search' && !hundredCoop ? (
                   <div className="flex flex-col items-center ml-2 min-w-[100px] md:min-w-[150px]">
                     <div className="flex items-center gap-1 mb-1">
                       <span className="text-base font-bold text-rk-slate-700 bg-rk-amber-50 px-3 py-2 rounded-xl border border-rk-amber-200 shadow-sm leading-none">
@@ -1861,7 +2991,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     </div>
                     {/* 時間制限は設けないため、カウントダウン表示は出さない */}
                   </div>
-                )}
+                ) : null}
                 {isMultiplay && (proCode || displayRoomCode) && (
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-1">
@@ -1889,45 +3019,17 @@ const GameScreen: React.FC<GameScreenProps> = ({
 
           <div className="w-12 h-12 flex-shrink-0" aria-hidden />
         </div>
+        )}
         <div className="h-1.5 w-full bg-rk-slate-200/50 rounded-xl overflow-hidden border border-rk-slate-200 mt-1">
           <div className="h-full bg-rk-success-200 transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
+        {roboIdleActive && !isFinished ? (
+          <p className="mt-0.5 text-center text-[11px] font-bold text-rk-slate-500 leading-snug">
+            {RAKUDA_ROBO_EMOJI} {RAKUDA_ROBO_NAME}が続けています
+          </p>
+        ) : null}
       </div>
 
-      {!isFinished && boardParticipants.length > 0 ? (
-        <div
-          className={`mx-auto w-full max-w-2xl flex-shrink-0 flex items-center justify-center ${hundredCoop ? 'px-2 mb-1' : 'px-4 mb-2'}`}
-          aria-label="参加者"
-        >
-          <div
-            className="flex items-center justify-center gap-1.5 flex-wrap"
-            style={{ width: layout.boardWidth || layout.boardSize ? `${layout.boardWidth || layout.boardSize}px` : '100%', maxWidth: '100%' }}
-          >
-            {boardParticipants.slice(0, 12).map((p) => {
-              const isSelf =
-                hundredCoop
-                  ? !!currentFirebaseUid && p.uid === currentFirebaseUid
-                  : !!userId && p.uid === userId;
-              return (
-                <span
-                  key={p.uid}
-                  title={p.name}
-                  className={`inline-flex h-7 w-7 md:h-8 md:w-8 items-center justify-center rounded-xl border bg-rk-white text-base md:text-lg shadow-sm ${
-                    isSelf ? 'border-rk-primary ring-2 ring-rk-primary/40' : 'border-rk-slate-200'
-                  }`}
-                >
-                  {p.emoji}
-                </span>
-              );
-            })}
-            {boardParticipants.length > 12 ? (
-              <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">+{boardParticipants.length - 12}</span>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      {/* Game Over Overlay for Multiplay */}
       <AnimatePresence>
         {isMultiplay && roomStatus === 'end' && (
           <motion.div 
@@ -1997,7 +3099,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                 中断してもいいですか？
               </p>
               <p className="mt-2 text-xs font-medium text-rk-slate-600 leading-relaxed">
-                他の参加者にも知らせることになります
+                募集も終了し、他の参加者にも知らせることになります
               </p>
               <div className="mt-4 flex flex-col gap-2">
                 <button
@@ -2060,22 +3162,62 @@ const GameScreen: React.FC<GameScreenProps> = ({
       <div
         ref={mainContentRef}
         className={`z-10 flex-1 min-h-0 min-w-0 flex items-center justify-center w-full ${
-          isRectBoard ? 'overflow-y-auto overflow-x-hidden' : 'overflow-hidden'
-        } ${hundredCoop ? 'px-2' : 'px-4'}`}
+          hundredCoop ? 'px-0.5 overflow-hidden' : 'px-2 sm:px-3 overflow-y-auto overflow-x-hidden'
+        }`}
       >
           <div 
           ref={containerRef} 
-            className="relative bg-rk-white rounded-xl shadow-sm border border-rk-slate-200 overflow-hidden touch-none flex items-center justify-center shrink-0 my-1" 
+            className={`relative box-border max-w-full max-h-full bg-rk-white rounded-xl shadow-sm border border-rk-slate-200 overflow-hidden touch-none flex items-center justify-center shrink min-w-0 mx-auto ${hundredCoop ? 'my-0' : 'my-1'}`}
           style={{
             width: layout.boardWidth || layout.boardSize || 'auto',
+            maxWidth: '100%',
             height: layout.boardHeight || layout.boardSize || 'auto',
+            maxHeight: '100%',
           }} 
         >
           <canvas 
             ref={canvasRef} 
-              className="rounded-xl bg-rk-white shadow-sm cursor-crosshair" 
+              className="rounded-xl bg-rk-white shadow-sm cursor-crosshair max-w-full max-h-full" 
             onPointerDown={handlePointerDown}
           />
+
+          {showCoordLayer && layout.cellSize > 0 && (
+            <div
+              className="absolute inset-0 z-[5] pointer-events-none select-none"
+              aria-hidden
+            >
+              {Array.from({ length: gridCols }, (_, col) => (
+                <div
+                  key={`coord-col-${col}`}
+                  className="absolute flex items-center justify-center font-bold text-rk-sky-600 leading-none"
+                  style={{
+                    left: layout.gridOriginX + col * layout.cellSize,
+                    top: 0,
+                    width: layout.cellSize,
+                    height: layout.coordGutterTop,
+                    fontSize: layout.labelFontSize,
+                  }}
+                >
+                  {boardGridColumnLabel(col)}
+                </div>
+              ))}
+              {Array.from({ length: gridRows }, (_, row) => (
+                <div
+                  key={`coord-row-${row}`}
+                  className="absolute flex items-center justify-center font-bold text-rk-sky-600 leading-none tabular-nums"
+                  style={{
+                    left: 0,
+                    top: layout.gridOriginY + row * layout.cellSize,
+                    width: layout.coordGutterLeft,
+                    height: layout.cellSize,
+                    fontSize: layout.labelFontSize,
+                  }}
+                >
+                  {row + 1}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Countdown Overlay */}
           {(startCountdown > 0 || showStartText) && (
@@ -2090,7 +3232,55 @@ const GameScreen: React.FC<GameScreenProps> = ({
         </div>
       </div>
 
-      {!isFinished && hundredCoop && (
+      {!isFinished && !hundredCoop && boardParticipants.length > 0 ? (
+        <div
+          className="mx-auto w-full max-w-2xl flex-shrink-0 flex flex-col items-center gap-0.5 relative z-10 px-4 mb-2"
+          aria-label="参加者"
+        >
+          <div
+            className="flex items-center justify-center gap-1.5 flex-wrap"
+            style={{
+              width: layout.boardWidth || layout.boardSize ? `${layout.boardWidth || layout.boardSize}px` : '100%',
+              maxWidth: '100%',
+            }}
+          >
+            {boardParticipants.slice(0, 12).map((p) => {
+              const isSelf = !!userId && p.uid === userId;
+              return (
+                <span
+                  key={p.uid}
+                  title={p.name}
+                  className={`inline-flex h-[2.1rem] w-[2.1rem] md:h-[2.4rem] md:w-[2.4rem] items-center justify-center rounded-xl border bg-rk-white text-[1.2rem] md:text-[1.35rem] shadow-sm ${
+                    isSelf ? 'border-rk-primary ring-2 ring-rk-primary/40' : 'border-rk-slate-200'
+                  }`}
+                >
+                  <RakudaGreenGateEmoji size="md" greenGate={greenGateByUid[p.uid]}>
+                    {p.emoji}
+                  </RakudaGreenGateEmoji>
+                </span>
+              );
+            })}
+            {boardParticipants.length > 12 ? (
+              <span className="text-[10px] font-bold text-rk-slate-600 tabular-nums">
+                +{boardParticipants.length - 12}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {isRoboPickupLounge && !isFinished ? (
+        <div className="relative z-10 w-full max-w-3xl flex-shrink-0 px-2 mt-1 space-y-1.5">
+          <RoboPickupLoungeGuide variant="compact" rotateLines title={roboPickupLoungeTitleForRoom(roomId)} />
+          {!isFinished && totalCount > 0 && safeFoundCount < totalCount ? (
+            <p className="text-center text-[11px] font-medium text-rk-slate-600 leading-snug">
+              みんなで {safeFoundCount}/{totalCount} — 全部見つけると結果が出ます
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!isFinished && hundredCoop && pickupHintButtonVisible && (
         <div
           className="w-full px-4 flex items-center justify-center z-20 flex-shrink-0"
           style={{
@@ -2099,13 +3289,22 @@ const GameScreen: React.FC<GameScreenProps> = ({
               : 'calc(var(--rk-bottom-banner, 0px) + env(safe-area-inset-bottom) + 8px)',
           }}
         >
+          <div
+            className="w-full"
+            style={{
+              maxWidth:
+                layout.boardWidth || layout.boardSize
+                  ? `${layout.boardWidth || layout.boardSize}px`
+                  : '100%',
+            }}
+          >
           <button
             onClick={handleHint}
-            className="bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 py-8 min-h-[4.5rem]"
-            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
+            className="w-full bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 py-[1.4rem] min-h-[3.15rem]"
           >
-            <span className="text-lg leading-snug">☝️{t.hint}</span>
+            <span className="text-base leading-snug">☝️{t.hint}</span>
           </button>
+          </div>
         </div>
       )}
 
@@ -2118,18 +3317,25 @@ const GameScreen: React.FC<GameScreenProps> = ({
             paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)',
           }}
         >
+          <div
+            className="w-full flex flex-col items-stretch gap-2"
+            style={{
+              maxWidth:
+                layout.boardWidth || layout.boardSize
+                  ? `${layout.boardWidth || layout.boardSize}px`
+                  : '100%',
+            }}
+          >
           <button
             onClick={handleHint}
-            className="bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 py-8 min-h-[4.5rem]"
-            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
+            className={`w-full bg-rk-sky-200 text-rk-slate-700 rounded-xl shadow-sm border border-rk-sky-200 transition-transform flex items-center justify-center gap-2 font-medium active:scale-95 flex-shrink-0 px-4 ${tabletSolo ? 'py-4 min-h-[3rem]' : 'py-8 min-h-[4.5rem]'}`}
           >
-            <span className="text-lg leading-snug">☝️{t.hint}</span>
+            <span className={`${tabletSolo ? 'text-base' : 'text-lg'} leading-snug`}>☝️{t.hint}</span>
           </button>
 
           <div
             className={`bg-rk-success-50 text-rk-slate-700 rounded-xl shadow-sm border border-rk-success-200 transition-colors relative overflow-hidden flex flex-col items-center w-full
               ${showAnswers ? 'max-h-[45vh]' : ''} ${!showAnswers ? 'hover:scale-[1.01] active:scale-[0.99] cursor-pointer' : ''}`}
-            style={{ width: layout.boardWidth || layout.boardSize || 'auto' }}
             onClick={handleShowAnswers}
           >
             <div className={`w-full h-full flex flex-col items-center justify-center ${showAnswers ? 'p-3' : 'p-0'}`}>
@@ -2139,7 +3345,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                     e.stopPropagation();
                     handleShowAnswers();
                   }}
-                  className="w-full flex items-center justify-center gap-2 font-black text-lg leading-snug active:scale-95 transition-transform px-4 py-8 min-h-[4.5rem]"
+                  className={`w-full flex items-center justify-center gap-2 font-black leading-snug active:scale-95 transition-transform px-4 ${tabletSolo ? 'text-base py-4 min-h-[3rem]' : 'text-lg py-8 min-h-[4.5rem]'}`}
                 >
                   <span aria-hidden>🔍</span>
                   <span className="font-black">{t.showAnswers}</span>
@@ -2228,6 +3434,7 @@ const GameScreen: React.FC<GameScreenProps> = ({
                 </div>
               )}
             </div>
+          </div>
           </div>
         </div>
       )}

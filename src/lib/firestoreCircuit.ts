@@ -5,6 +5,7 @@ type TripReason = 'resource-exhausted' | 'unknown';
 
 let trippedUntilMs = 0;
 let enableTimer: number | null = null;
+let networkDisabledByCircuit = false;
 
 function getCode(err: unknown): string | null {
   const anyErr = err as any;
@@ -25,10 +26,13 @@ export function tripFirestoreCircuit(db: Firestore, err: unknown, opts?: { coold
   if (nextUntil <= trippedUntilMs) return true;
   trippedUntilMs = nextUntil;
 
-  try {
-    void disableNetwork(db);
-  } catch {
-    // ignore
+  if (!networkDisabledByCircuit) {
+    networkDisabledByCircuit = true;
+    try {
+      void disableNetwork(db);
+    } catch {
+      networkDisabledByCircuit = false;
+    }
   }
 
   if (enableTimer != null) {
@@ -42,6 +46,8 @@ export function tripFirestoreCircuit(db: Firestore, err: unknown, opts?: { coold
   enableTimer = window.setTimeout(() => {
     enableTimer = null;
     if (Date.now() < trippedUntilMs) return;
+    if (!networkDisabledByCircuit) return;
+    networkDisabledByCircuit = false;
     try {
       void enableNetwork(db);
     } catch {

@@ -1,4 +1,4 @@
-import type { FirestoreTimeInput } from '../../lib/rakudaHubShell';
+import type { FirestoreTimeInput } from '../../lib/firestoreTime';
 
 export interface ActiveUser {
   uid: string;
@@ -7,6 +7,10 @@ export interface ActiveUser {
   lastActive: any;
   /** らくだにいるが盤面・掲示板は見ていない（食事など） */
   onBreak?: boolean;
+  /** 自分から「一緒に遊ぶ？」合図（手動・30分） */
+  playInvite?: boolean;
+  /** 緑ゲート有効期限（ミリ秒・在席 heartbeat で同期） */
+  greenUntilMs?: number | null;
 }
 
 export interface Message {
@@ -20,6 +24,8 @@ export interface Message {
   isRead?: boolean;
   /** 募集は renraku_public、コミュニティ掲示は public_messages、非公開は renraku_private（管理者タイムラインのみ） */
   type?: 'recruit' | 'community' | 'private';
+  /** 掲示板投稿種別: announcement=らくだ連絡 / chat=みんなの会話（未指定は chat） */
+  postKind?: 'announcement' | 'chat';
   /** 管理者ピン留め（30 日自動削除の対象外） */
   pinned?: boolean;
   /** 管理者による論理削除（`deleted`）／通報非表示（`blocked`） */
@@ -39,6 +45,9 @@ export interface Message {
     difficulty: string;
     targetWord?: string;
     url: string;
+    /** ことば探し以外の対戦募集（リバーシ・五目並べ） */
+    game?: 'reversi' | 'gomoku';
+    roomCode?: string;
   };
 }
 
@@ -58,9 +67,21 @@ export type HundredRecruitDurationSec = 0 | 300 | 600 | 900;
 /** @deprecated 意味は {@link HundredRecruitDurationSec}（募集時間） */
 export type HundredGameTimeLimitSec = HundredRecruitDurationSec;
 
+/** みんなであそぶのゲーム種別（未指定はひと言探し pickup） */
+export type HundredPlayMode = 'pickup' | 'tile_match';
+
+/** ひと言探しの文字種（未指定は hiragana） */
+export type PickupCharset = 'hiragana' | 'digit' | 'latin' | 'emoji';
+
 export interface HundredPublicRecruit {
   id: string;
   targetWord: string;
+  /** pickup（既定）または tile_match（ペア探し） */
+  hundredMode?: HundredPlayMode;
+  /** ひと言探し: hiragana | digit | latin | emoji */
+  pickupCharset?: PickupCharset;
+  /** ペア探しの難易度 */
+  tileMatchDifficulty?: 'easy' | 'normal' | 'hard';
   /** 列数（後方互換: 正方形のみのとき boardRows 省略可） */
   boardSize: number;
   boardCols?: number;
@@ -82,6 +103,10 @@ export interface HundredPublicRecruit {
    * プレイ時間（秒）。新規募集は 0（制限なし）。旧データのみ正の値がありうる。`normalizeHundredGameTimeLimitSec`。
    */
   gameTimeLimitSec?: number;
+  /** ひと言探し: 盤面のヒントボタンを許可するか（未設定は true） */
+  hintsEnabled?: boolean;
+  /** 🤖 らくだロボ常設ひと言探し（募集を消さない） */
+  roboPickupLounge?: boolean;
 }
 
 /** 一覧用: hundred_rooms のライブ状態（roomId →） */
@@ -94,6 +119,8 @@ export type HundredRoomListMeta = {
   /** プレイ時間（秒）。0 = 制限なし。正規化は `normalizeHundredGameTimeLimitSec` */
   gameTimeLimitSec?: number;
   endReason?: string;
+  /** 現行お題の開始（ロボ常設） */
+  startedAt?: FirestoreTimeInput;
 };
 
 /** 管理者の伝言受信箱の読み込み状態 */
