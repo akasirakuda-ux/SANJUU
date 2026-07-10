@@ -1,0 +1,20 @@
+* text=auto
+.gitattributes text eol=lf
+
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.svg text eol=lf
+*.rules text eol=lf
+
+.env.example text eol=lf
+.env.development text eol=lf
+.env.production text eol=lf
+
+firebase.json text eol=lf
+firestore.rules text eol=lf
