@@ -1,0 +1,32 @@
+---
+description: TikTok @akasirakuda の収益設定・LIVEギフト・換金（Googleとは別口座）
+alwaysApply: true
+---
+
+# TikTok 収益 — 豆が覚える（らくださんは暗記不要）
+
+## らくださん向け一言
+
+**TikTok のお金は `uratomonaoki0358` ではない。** スマホの **@akasirakuda** で本人確認・振込先・LIVEギフトON。手順は `docs/tiktok-monetization-checklist.md`。
+
+## 対応表
+
+| 項目 | 内容 |
+|------|------|
+| **アカウント** | @akasirakuda |
+| **プロフィール導線** | `rakuda.coffee` 固定（維持） |
+| **主収益（LIVE）** | ギフト → ダイヤ → 出金（**Google AdSense とは無関係**） |
+| **既に動いている兆候** | LIVE 終了画面の段階的報酬（例 6/1 $0.03、6/2 $0.82） |
+| **今やる設定** | KYC・銀行/PayPal・ギフトON・（任意）LIVEサブスク |
+| **別物** | Creator Rewards（長尺投稿・フォロワー1万前後）— LIVE設定とは別 |
+
+## 世界観
+
+- ギフト煽り・ランキング煽りはしない（子ども主役・静けさ）
+- TikTok は **昼枠**；サイト収益の最優先は **応援ゲート（青・¥500/月）Stripe** のまま
+
+## 関連
+
+- `docs/tiktok-monetization-checklist.md`
+- `docs/rakuda-metrics-snapshot.md`（LIVE数字・フォロワー）
+- Google: `.cursor/rules/rakuda-google-ads-account.mdc`

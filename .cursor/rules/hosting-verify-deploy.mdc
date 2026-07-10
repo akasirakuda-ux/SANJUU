@@ -1,0 +1,32 @@
+---
+description: Firebase Hosting 反映はビルド・デプロイ・成果確認までエージェントが行い、利用者に確認だけ押し付けない
+alwaysApply: true
+---
+
+# Hosting（らくだ本体）— 成果確認までエージェントの責務
+
+## 原則
+
+- **ユーザー向け画面**（`src/**` や `firebase.json` の Hosting まわり）を変えたら、「ソースを直した」だけで終わらせない。
+- **本番に載せる意図がある変更**では、このリポジトリ直下で **`npm run deploy:hosting`** を実行する（**`vite build` → `dist` の実在検証 → `firebase deploy --only hosting`** を一括）。単に `npm run build` だけで終わらせない。
+- **`firestore.rules` を変えたリリース**では、Hosting だけ載せるとクライアントとルールがズレる。**`npm run deploy:hosting:with-rules`**（`hosting` + `firestore:rules` 一括）か、別途 **`npm run deploy:firestore:rules`** を必ず走らせる。
+- 報告には **Firebase CLI の成功ログ**と **`verify-hosting-dist` の OK 行**（または同等の事実）を添える。**利用者に「表示を確認してください」と先に振らない。**
+- ローカルだけの変更なら「本番未反映」と明記する。
+
+## リリースを迷わないための前提（人間オペレーション）
+
+- **「このバンドルが本番の正」**  
+  未コミットや中途半端な作業ツリーでデプロイしない。**コミット（またはブランチ先端を明示）**してから `deploy:*` を実行する。エージェントがデプロイする前に **`git status` がデプロイ対象と矛盾していない**ことを確認する。
+
+- **実機・本番 URL での区切り**  
+  デプロイ前後で **`https://rakuda.coffee/`（本番）** と **想定 3GB 級の実機**の両方で、直近変更した導線（三十・連絡帳・募集など）を **自分の頭の中で「一区切り」したうえで** 確認する。スクショ検証や回帰項目はリリース単位で揃える。
+
+- **SANJUU 側（Cloud Run 等）とらくだ本体を同日に揃える**  
+  1. 先に **三十（HTTP/WS）を本番に反映**し、疎通・代表 URL を確定する。  
+  2. 必要ならリポジトリ直下 **`.env.production` の `VITE_SANJUU_*` をその URL に合わせる**。  
+  3. **`pnpm run build` で本番バンドルを生成**し、**`pnpm run deploy:hosting:with-rules`**（ルール変更時）または **`pnpm run deploy:hosting`** で Hosting を載せる。  
+  「らくだだけ先」「三十だけ先」が長くズレないよう、**同一リリース日内でペアにする**。
+
+## 謝り方・説明
+
+- 確認漏れがあった場合は **先に謝罪**し、上記の手順を **その場で実行**してから結果を報告する。

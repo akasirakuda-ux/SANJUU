@@ -1,0 +1,55 @@
+---
+description: Google 広告・AdMob は uratomonaoki0358 のみ（らくださんは覚えなくてよい）
+alwaysApply: true
+---
+
+# Google 広告アカウント — 豆が覚える（らくださんは暗記不要）
+
+## らくださん向け一言（説明するときはこれだけ）
+
+**「サイトの広告も YouTube も、お金の口は `uratomonaoki0358@gmail.com` だけ。`akasirakuda` では AdMob の続行をしない。」**
+
+## 豆が守る対応表
+
+| 用途 | メール | パブリッシャー ID |
+|------|--------|-------------------|
+| **YouTube 収益・サイト内 AdMob・入金** | `uratomonaoki0358@gmail.com` | `pub-7642612812471632` |
+| **らくだ開発・Firebase・Stripe 等（サイト運用）** | `akasirakuda@gmail.com` | `pub-7810798546990694`（**AdMob を足さない**） |
+
+## サイト内広告（rakuda.coffee）— AdSense。AdMob の「アプリ登録」ではない
+
+| 対象 | 使うもの |
+|------|----------|
+| **ブラウザサイト** rakuda.coffee | **AdSense**（サイトを追加）— 同じ **0358** アカウント |
+| **スマホアプリ**（Flutter 等・将来） | **AdMob**（Android / iOS） |
+
+### AdSense（サイト）— 2026-05-31 時点
+
+| 段階 | 状態 |
+|------|------|
+| 再有効化・サイト追加・所有確認・審査リクエスト・CMP | **済み** |
+| Google 審査 | **審査待ち**（画面「準備中」） |
+| コード | `index.html` に `ca-pub-7642612812471632`・`deploy:hosting` 済み |
+
+**次（らくださん）**: メール確認 → 結果をチャットで一言。  
+**次（豆）**: 承認後、無料プレイ（いつものらくだ）の全面広告を AdSense 接続（プレースホルダー差し替え）。**茶色ゲートは廃止済み**。
+
+### AdSense（サイト）手順（再開時）
+
+1. **0358** で [AdSense](https://www.google.com/adsense/) を開く
+2. 審査結果を確認（通過 → 豆へ）
+3. 豆が全面広告を接続
+
+### AdMob（アプリ）— 今は不要
+
+AdMob の「アプリを登録」は **Android/iOS 用**。Web サイトはここに登録しない。
+
+## やらないこと
+
+- `akasirakuda` / `pub-7810798546990694` で AdMob「続行」や新規収益口座
+- 3つ目の AdSense／パブリッシャーを作る提案
+
+## 関連 docs
+
+- `docs/rakuda-metrics-snapshot.md`（入金 ¥49,416 等）
+- `docs/rakuda-revenue-brief-for-ai.md`

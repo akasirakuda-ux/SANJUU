@@ -1,0 +1,198 @@
+---
+description: 応援ゲート（青ゲート）Stripe・収益 — 現状スナップショット
+alwaysApply: true
+---
+
+# 作業メモ（応援ゲート / Stripe / 収益）
+
+**最終更新：2026-07-09** — **茶色ゲート廃止**・**応援＝青ゲート・¥500/月（税込）**（らくださん確定）
+
+---
+
+## ゲート（豆が覚える — 2026-07-09）
+
+| 利用者向け | らくださんの呼び方 | 料金 | 広告 | コード内部 ID |
+|---|---|---|---|---|
+| **いつものらくだ**（「はじめる」） | 無料プレイ | 無料 | あり（自然な区切り） | `blue` |
+| ~~茶色ゲート~~ | **廃止** | — | — | 旧 `brown` → `blue` 移行 |
+| **らくだ応援ゲート** | **青ゲート** | **¥500/月** | **なし** | `green` |
+
+- 表記：`src/constants/rakudaSupportGateLabels.ts` · 価格：`src/lib/greenGateStripeConfig.ts`（`GREEN_GATE_MONTHLY_YEN = 500`）
+- **豆**：らくださんの「青ゲート＝応援500円」は **有料応援プラン** のこと。無料の「はじめる」（`blue`）と混同しない
+
+---
+
+## 今の本番（利用者が見るもの）
+
+| 項目 | 状態 |
+|------|------|
+| URL | `https://rakuda.coffee/` |
+| 無料プレイ | **「はじめる」** — 広告あり（茶ゲートなし） |
+| 応援ゲート | 新規入口 **お休み可**（既定 CLOSED）— 決済 UI は **OFF** が多い |
+| Stripe 決済 UI | **出ない**（`VITE_STRIPE_GREEN_GATE_ENABLED` 未設定） |
+| 利用者への課金 | **なし**（決済 ON 前） |
+
+**開発（`npm run dev`）だけ**：緑を決済なしテスト有効化できる（本番ビルドでは不可）。
+
+---
+
+## コード実装（完了）
+
+### フロー
+
+1. 利用者が緑を選ぶ → Stripe Checkout へ（フラグ ON 時のみ）
+2. 成功 URL: `/?green_gate=success&session_id=…`
+3. Webhook / sync で Firestore `rk_green_gate/{uid}` に `greenUntilMs` 等を保存
+4. クライアントが購読 → `syncLocalGreenGateFromServer` で緑・広告なしを反映
+
+### API（`server.mjs` + `server/stripeGreenGate.mjs`）
+
+| パス | 役割 |
+|------|------|
+| `POST /api/stripe/create-checkout-session` | Checkout 開始（Bearer 必須） |
+| `POST /api/stripe/sync-checkout-session` | 戻り URL 後の同期 |
+| `POST /api/stripe/webhook` | Stripe イベント → Firestore |
+
+### 主要ファイル
+
+- **サーバー**: `server/stripeGreenGate.mjs`, `server.mjs`, `Dockerfile`（`server/` 同梱）
+- **クライアント**: `src/lib/greenGateStripeConfig.ts`, `greenGateStripeClient.ts`
+- **ゲート**: `src/lib/rakudaGate.ts`, `src/components/RakudaGateSelection.tsx`, `src/hooks/useAppShell.ts`, `useGreenGateFirestore.ts`
+- **ルール**: `firestore.rules` — `rk_green_gate/{uid}` 読取=本人のみ、書込=サーバーのみ
+- **規約**: `src/constants/legal.ts` — 月額480円・Stripe の一文
+- **依存**: `package.json` → `stripe`
+- **開発 stub**: `vite.config.ts` — Stripe API 未設定時 `stripe_not_configured`
+
+### 環境変数（`.env.example` 参照・Git に載せない）
+
+**サーバー（Cloud Run 等）**
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_GREEN_PRICE_ID`（本番 Price ID）
+- `APP_PUBLIC_ORIGIN`（既定 `https://rakuda.coffee`）
+
+**クライアント（ビルド時）**
+
+- `VITE_STRIPE_GREEN_GATE_ENABLED=1` — **これがあるときだけ**本番で決済 UI を表示
+
+---
+
+## まだ動かない部分（決済 ON 前のギャップ）
+
+~~Firebase Hosting は **静的 SPA**。`firebase.json` に `/api/stripe/**` の rewrite **なし**~~
+
+**2026-05-27 更新 — インフラ初回セットアップ済み**
+
+| 項目 | 状態 |
+|------|------|
+| Cloud Run `rakuda-api` | **デプロイ済**（`asia-northeast1`） |
+| `firebase.json` rewrite | `/api/stripe/**`, `/api/session` → `rakuda-api` |
+| Hosting 反映 | **済** — `POST /api/stripe/create-checkout-session` → `stripe_not_configured`（キー未設定時） |
+| Stripe env（Cloud Run） | **未設定** — `.env.rakuda-api.local` → `npm run deploy:rakuda-api` |
+| Webhook（Stripe 側） | **未設定** — URL: `https://rakuda.coffee/api/stripe/webhook` |
+| `VITE_STRIPE_GREEN_GATE_ENABLED=1` | **未設定**（決済 UI は「準備中」のまま） |
+
+→ **Checkout を動かすには** 残り：
+
+1. ~~`server.mjs` を Cloud Run へデプロイ~~ ✅
+2. ~~`firebase.json` rewrite~~ ✅
+3. Stripe ダッシュボードで Webhook → `https://rakuda.coffee/api/stripe/webhook`
+4. `.env.rakuda-api.local` に本番キー・Price ID → `npm run deploy:rakuda-api`
+5. 「決済 ON」と明示されたら `VITE_STRIPE_GREEN_GATE_ENABLED=1` + プライバシー追記 → `deploy:hosting:with-rules`
+6. **らくださん本人のみ** end-to-end テスト
+
+---
+
+## 決済 ON 時のプライバシー（**必ず同時にやる**）
+
+緑ゲート決済を ON にするとき、**コードだけ ON にしない**。利用者向け文言もセットで更新する。
+
+### 背景
+
+- 今の【保護者・利用者の方へ】（`src/constants/parentReassurance.ts` → `legal.ts`）には  
+  **「住所・電話・本名を収集しない」** とある → **らくだ本体としてはそのまま正しい**
+- 決済 ON 後は **Stripe Checkout** が **カード情報等を Stripe 側で処理**（らくだ Firebase には保存しない）
+- 利用者・保護者には **「決済データは Stripe」** と書いておかないと、プライバシー説明が不足する
+
+### やること（決済 ON のチェックリストに含める）
+
+1. `src/constants/legal.ts` のプライバシー、または `parentReassurance.ts` に **Stripe 決記の一文** を追加  
+   - 例：「緑ゲート（月額）の決済は Stripe が代行します。カード番号等は Stripe が処理し、らくだ珈琲のサーバーには保存しません。」
+2. 必要なら **特商法** ページ／リンクも同タイミングで（未着手リスト参照）
+3. 【保護者・利用者の方へ】の既存条文は **削除しない**（「らくだが本名等を取らない」は維持）
+
+### 触るファイル
+
+- `src/constants/parentReassurance.ts`
+- `src/constants/legal.ts`
+
+---
+
+## Stripe 本番アカウント（らくださん・2026-05-27 完了）
+
+- **本番アカウント有効化済み**（本人確認・口座・2FA）
+- ビジネス名：らくだ珈琲 / サイト：`https://rakuda.coffee/`
+- 明細表記：**RAKUDA COFFEE**
+- 商品：**らくだ応援ゲート ¥500/月（税込）** — Stripe 本番（旧480円商品は廃止方向）
+- 口座：楽天銀行
+- **シークレットキー（`sk_live_` / `sk_test_`）をチャット・Git に貼らない**
+
+---
+
+## 収益シミュレーション（反映済み）
+
+- 管理者のみ：`Renrakucho` の **「かんり」** タブ上部
+- ファイル：`src/components/admin/RevenueSimulator.tsx`, `AdminScreen.tsx`
+- 目標：月 ¥1,000,000（3〜6ヶ月連続安定でサイト広告全面解除）
+- 豆の現実ライン：広告 **¥30〜80/人/月**
+- 試算例：3,000人 × ¥50 ＋ 20人 × ¥500 ＝ **¥159,600/月**
+
+---
+
+## 依頼の切り口
+
+- **「決済を ON にして」** と明示されるまで `VITE_STRIPE_GREEN_GATE_ENABLED` は付けない
+- Price ID・Webhook URL 設定は豆が案内（キーは別経路）
+- 管理者メニュー統合は **3ツール以上** になったら検討
+
+---
+
+## 募金箱（Payment Link・可変金額）— **らくださん作業**
+
+コードは `src/constants/donationConfig.ts`, `DonationBox.tsx`, `DonationThanksModal.tsx`。
+**フラグ OFF なら利用者に見えない**（`VITE_DONATION_ENABLED` 未設定 or 0）。
+
+### らくださん（Stripe ダッシュボード）
+
+1. [Payment Links](https://dashboard.stripe.com/payment-links) → **新規作成**
+2. 商品：**「お客様が金額を決める」**（可変金額）を ON
+3. **成功時の URL**: `https://rakuda.coffee/?donation=thanks`
+4. 発行されたリンク URL を `.env.production` に（Git に載せない）:
+   - `VITE_DONATION_ENABLED=1`
+   - `VITE_STRIPE_DONATION_PAYMENT_LINK=https://buy.stripe.com/...`
+5. `npm run deploy:hosting`（または with-rules）で再デプロイ
+
+### 豆（コード側・済）
+
+- 設定「☕ 応援する（任意）」→ Payment Link を新規タブで開く
+- 決済後 `?donation=thanks` で戻る → お礼モーダル
+- プライバシー追記：`DONATION_PRIVACY_APPEND`（`legal.ts`）
+
+---
+
+## 未着手（任意・後回し可）
+
+- Stripe Customer Portal（解約・カード変更 UI）
+- 特商法ページの独立追記（**決済 ON 時は優先度上げ** — 上記「決済 ON 時のプライバシー」とセット）
+- 本番 Cloud Run + rewrite の初回セットアップ — **2026-05-27 完了**（`rakuda-api` + `npm run deploy:rakuda-api`）
+
+---
+
+## AdSense 通過後（らくださん 2026-06 — 豆が覚える）
+
+詳細は `docs/rakuda-revenue-brief-for-ai.md` の「AdSense 審査通過後にやること」。
+
+- **緑の中身**：数独 hard・ことば 10/11・オセロ CPU 上級 → 緑。ひと言探し・オセロオンラインは無料のまま。
+- **広告**：ソロはゲーム終了ごと（60秒ガード）。対戦は局中なし → まず退室時1回。
+- **ペア探し**：入口削除済み（再公開は依頼時のみ）。

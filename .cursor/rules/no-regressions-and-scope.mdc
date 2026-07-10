@@ -37,3 +37,10 @@ alwaysApply: true
 - **例外カテゴリ**: 例外条件（例: 1文字回答）が入っている場合、その例外だけが有効
 - **配信モード**: 広告OFF/軽量化が指定範囲でのみ効き、クリア後は通常へ戻る
 
+## トップハブ（らくだトップ）のレイアウト
+
+- **操作できる領域を `%` の `top` で複数レイヤーに絶対配置しない**（端末高さ・内容量で必ず食い違い、同じ微修正の繰り返しになる）。
+- ハブ本体は **`ModeEntryLayout` の `layoutVariant="hubScroll"`**（縦積み＋1 スクロール）。実装は `src/pages/SeatSelection.tsx` を参照。
+- QR など **fixed で重ねる要素がある場合**は、`hubScrollContentTopClass` でスクロール本文の上余白を確保する（数値は fixed 側とセットでメンテ）。
+- 画面がシンプルで絶対配置で足りる場合のみ、従来の **`layoutVariant="absolute"`（既定）** を使う（例: `src/components/WorldsWish.tsx`）。
+
