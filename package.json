@@ -19,6 +19,7 @@
     "deploy:firestore:rules": "firebase deploy --only firestore:rules",
     "deploy:hosting:with-rules": "vite build && node scripts/verify-hosting-dist.mjs && firebase deploy --only hosting,firestore:rules",
     "deploy:rakuda-api": "node scripts/deploy-rakuda-api.mjs",
+    "deploy:sanjuu": "node scripts/deploy-sanjuu.mjs",
     "setup:green-gate-stripe": "node scripts/setup-green-gate-stripe.mjs",
     "start": "node server.mjs",
     "preview": "vite preview",
