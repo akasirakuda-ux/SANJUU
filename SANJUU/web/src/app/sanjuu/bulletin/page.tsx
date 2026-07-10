@@ -8,20 +8,30 @@ const rakudaKeijibanUrl = () =>
 export default function SanjuuBulletinPage() {
   const keijibanHref = rakudaKeijibanUrl();
   return (
-    <main style={{ padding: '1.5rem', maxWidth: 560, margin: '0 auto', fontFamily: 'system-ui, sans-serif' }}>
+    <main
+      style={{
+        padding: '1.5rem',
+        maxWidth: 560,
+        margin: '0 auto',
+        fontFamily: 'var(--sj-rk-font-ui)',
+        color: 'var(--sj-rk-fg-default)',
+      }}
+    >
       <h1 style={{ fontSize: '1.35rem', fontWeight: 800 }}>全体掲示板</h1>
-      <p style={{ marginTop: 12, color: '#334155', lineHeight: 1.6 }}>
+      <p style={{ marginTop: 12, color: 'var(--sj-rk-fg-default)', lineHeight: 1.6 }}>
         らくだ珈琲のトップからこのページへ遷移しています。
       </p>
       <p style={{ marginTop: 16, lineHeight: 1.6 }}>
-        <a href={keijibanHref} style={{ color: '#0369a1', fontWeight: 700 }} target="_blank" rel="noopener noreferrer">
+        <a href={keijibanHref} className="sj-rk-inline-link" target="_blank" rel="noopener noreferrer">
           らくだ珈琲の掲示板（みんなであそぶ）を開く
         </a>
-        <span style={{ marginLeft: 8, color: '#64748b', fontSize: '0.92rem' }}>（らくだ本体・Firebase）</span>
+        <span style={{ marginLeft: 8, color: 'var(--sj-rk-fg-subtle)', fontSize: '0.92rem' }}>
+          （らくだ本体・Firebase）
+        </span>
       </p>
       <p style={{ marginTop: 20 }}>
-        <Link href="/sanjuu" style={{ color: '#0369a1', fontWeight: 700 }}>
-          ← 30SANJUU（らくだ入口）へ
+        <Link href="/sanjuu" className="sj-rk-inline-link">
+          ← ひと言探し（らくだ入口）へ
         </Link>
       </p>
     </main>

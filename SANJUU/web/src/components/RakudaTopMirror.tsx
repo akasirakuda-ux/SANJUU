@@ -3,20 +3,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import styles from './RakudaTopMirror.module.css';
 import Link from 'next/link';
+import { readRakudaQueryProfile } from '../lib/rakudaQueryProfile';
 
 /** らくだトップに寄せた「表示名」ブロック。取得は同一オリジンの `/api/rakuda-profile` 経由 */
-function readRakudaQueryProfile(): { urlEmoji: string; urlNick: string } {
-  if (typeof window === 'undefined') return { urlEmoji: '', urlNick: '' };
-  try {
-    const sp = new URL(window.location.href).searchParams;
-    return {
-      urlEmoji: (sp.get('rkEmoji') ?? '').trim(),
-      urlNick: (sp.get('rkNick') ?? '').trim(),
-    };
-  } catch {
-    return { urlEmoji: '', urlNick: '' };
-  }
-}
 
 export default function RakudaTopMirror() {
   const [emoji, setEmoji] = useState('');

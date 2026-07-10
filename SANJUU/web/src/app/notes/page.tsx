@@ -108,10 +108,12 @@ export default function NotesPage() {
       <h2 className={styles.h1}>連絡帳</h2>
 
       <section className={styles.section} aria-labelledby="play-recruit-heading">
-        <SanjuuBrandHeading as="h2" />
         <h2 id="play-recruit-heading" className={styles.sectionTitle}>
-          募集中のあそび
+          ひと言探し
         </h2>
+        <p className={styles.muted} style={{ marginTop: -6, marginBottom: 12, fontSize: '0.8rem' }}>
+          【ひと言探し】ひらがな900マス
+        </p>
         <div className={styles.row}>
           <button type="button" className={styles.btnPrimary} disabled={recruitBusy} onClick={() => void recruit()}>
             あそびを募集する
@@ -122,33 +124,18 @@ export default function NotesPage() {
         ) : (
           <div className={styles.cards}>
             {recruiting.map((room) => (
-              <div
-                key={room.roomId}
-                role="button"
-                tabIndex={0}
-                className={styles.card}
-                onClick={() => joinRoom(room.roomId)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    joinRoom(room.roomId);
-                  }
-                }}
-              >
-                <p className={styles.cardTitle}>『{room.embedWord}』をさがせ！</p>
-                <p className={styles.cardMeta}>
-                  ルーム {String(room.roomId)} ／ 参加人数 {room.clientsCount} / 30 にん
-                </p>
-                <button
-                  type="button"
-                  className={styles.btnSecondary}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    joinRoom(room.roomId);
-                  }}
-                >
-                  この募集に参加する
-                </button>
+              <div key={room.roomId} className={styles.cardRow}>
+                <div className={styles.cardRowBody}>
+                  <p className={styles.cardTitle}>『{room.embedWord}』をさがせ！</p>
+                  <p className={styles.cardMeta}>
+                    ルーム {String(room.roomId)} ／ 参加人数 {room.clientsCount} / 30 にん
+                  </p>
+                </div>
+                <div className={styles.cardRowActions}>
+                  <button type="button" className={styles.btnJoin} onClick={() => joinRoom(room.roomId)}>
+                    参加
+                  </button>
+                </div>
               </div>
             ))}
           </div>

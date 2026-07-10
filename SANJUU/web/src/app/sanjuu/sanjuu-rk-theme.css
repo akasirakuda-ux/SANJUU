@@ -1,0 +1,130 @@
+/**
+ * RK tone — values aligned with らくだ本体 src/index.css :root --rk-*
+ * Wrap `/sanjuu/*`, `/play`, `/r/*` with .sj-rk-theme (see layout.tsx files).
+ */
+
+.sj-rk-theme {
+  --sj-rk-bg-page: #f8fafc;
+  --sj-rk-bg-shell: rgb(254 243 199 / 0.9);
+  --sj-rk-fg-default: #1e293b;
+  --sj-rk-fg-muted: #475569;
+  --sj-rk-fg-subtle: #64748b;
+  --sj-rk-surface-card: #fffbeb;
+  --sj-rk-surface-input: #f8fafc;
+  --sj-rk-border-default: rgb(252 211 77 / 0.8);
+  --sj-rk-border-muted: #e2e8f0;
+  --sj-rk-accent-warm: #b45309;
+  --sj-rk-link: #92400e;
+  --sj-rk-accent-primary: #00c874;
+  --sj-rk-success-50: #ecfdf5;
+  --sj-rk-success-100: #d1fae5;
+  --sj-rk-success-200: #a7f3d0;
+  --sj-rk-success-300: #6ee7b7;
+  --sj-rk-success-400: #34d399;
+  --sj-rk-success-500: #10b981;
+  --sj-rk-success-600: #059669;
+  --sj-rk-success-700: #047857;
+  --sj-rk-success-800: #065f46;
+  --sj-rk-success-900: #064e3b;
+  --sj-rk-success-950: #022c22;
+  --sj-rk-semantic-success-bg: var(--sj-rk-success-50);
+  --sj-rk-semantic-success-border: var(--sj-rk-success-300);
+  --sj-rk-semantic-success-fg: var(--sj-rk-success-950);
+  --sj-rk-semantic-danger: #dc2626;
+  --sj-rk-semantic-danger-bg: #fef2f2;
+  --sj-rk-semantic-warning-fg: #b45309;
+  --sj-rk-disabled-bg: #f1f5f9;
+  --sj-rk-disabled-fg: #64748b;
+  /** みんなであそぶ・募集「募集中」バッジ（らくだ本体 --rk-hundred-recruit-badge と同値） */
+  --sj-rk-hundred-recruit-badge: #ff0000;
+  /** 下部広告帯（本体 Vite と同値。三十で帯 UI を足すとき用） */
+  --sj-rk-ad-banner-bg: #1a1a1a;
+  --sj-rk-ad-banner-badge-bg: #333333;
+  /** ハブ・連絡帳の木／羊皮トーン（らくだ本体 --rk-hub-* と同値） */
+  --sj-rk-hub-rose-panel: #f6c7c7;
+  --sj-rk-hub-bark: #5a3d28;
+  --sj-rk-hub-bark-deep: #3b2a18;
+  --sj-rk-hub-bark-border-soft: rgb(90 61 40 / 0.5);
+  --sj-rk-hub-parchment: #e3d5bc;
+  --sj-rk-hub-parchment-hover: #d9c9ae;
+  --sj-rk-hub-parchment-screen: #faf6f0;
+  --sj-rk-hub-shell-mid: #ebe4d6;
+  --sj-rk-hub-cocoa: #8b572a;
+  --sj-rk-hub-cocoa-shadow: rgb(101, 67, 33);
+  --sj-rk-hub-squircle: #eef5fb;
+  --sj-rk-unlock-scrim: #e0f7f7;
+  --sj-rk-game-parchment-from: #efe2d1;
+  --sj-rk-game-parchment-via: #f6ede2;
+  --sj-rk-game-parchment-to: #e7d8c4;
+  /** 本体 `--rk-game-solo-shell-gradient` と同見た目（amber/orange は rk-palettes 相当の固定値） */
+  --sj-rk-game-solo-shell-gradient: linear-gradient(
+    to bottom,
+    color-mix(in srgb, #fde68a 95%, transparent),
+    #ffedd5,
+    color-mix(in srgb, #fcd34d 88%, transparent)
+  );
+  --sj-rk-hub-qr-azuki: #96514d;
+  --sj-rk-stamp-tier-green: #22c55e;
+  --sj-rk-white: #ffffff;
+  --sj-rk-black: #000000;
+  --sj-rk-logo-band-coral: #ff6b6b;
+  --sj-rk-logo-band-mint: #4ecdc4;
+  --sj-rk-band-0: #ff6b6b;
+  --sj-rk-band-1: #4ecdc4;
+  --sj-rk-band-2: #45b7d1;
+  --sj-rk-band-3: #ffa502;
+  --sj-rk-band-4: #7bed9f;
+  --sj-rk-band-5: #70a1ff;
+  --sj-rk-band-6: #ff7f50;
+  --sj-rk-band-7: #a29bfe;
+  --sj-rk-band-8: #e84393;
+  --sj-rk-band-9: #2ed573;
+  --sj-rk-shadow-unlock-buy: rgb(180 110 0);
+  --sj-rk-shadow-soft-plate: #e2e8f0;
+  --sj-rk-shadow-elev-hub: 0 10px 30px rgb(120 53 15 / 0.08);
+  --sj-rk-shadow-elev-hub-focus: 0 12px 36px rgb(217 119 6 / 0.16);
+  --sj-rk-shadow-footer-hub: 0 -6px 24px rgb(120 53 15 / 0.08);
+  --sj-rk-shadow-footer-danger: 0 -6px 24px rgb(127 29 29 / 0.08);
+  --sj-rk-fly-title-stroke: rgb(255 255 255 / 0.95);
+  --sj-rk-fly-title-text-shadow: 0 10px 0 rgb(255 255 255 / 0.85);
+  --sj-rk-title-drop-shadow: 0 8px 12px rgb(0 0 0 / 0.18);
+  --sj-rk-boot-overlay-bg: rgb(0 0 0 / 0.9);
+  --sj-rk-boot-fatal-accent: #ef4444;
+  --sj-rk-boot-fatal-stack-bg: #222222;
+  --sj-rk-boot-loading-fg: var(--sj-rk-fg-muted);
+  /** ひらめきルーム（本体 `--rk-rest-*` と同値。三十で同画面を足すとき用） */
+  --sj-rk-rest-bg: #a2c2c2;
+  --sj-rk-rest-accent: #2dd4bf;
+  --sj-rk-radius: 0.75rem;
+  --sj-rk-font-ui: var(--font-mplus-rounded, "M PLUS Rounded 1c", Meiryo, sans-serif);
+
+  box-sizing: border-box;
+  min-height: 100dvh;
+  margin: 0;
+  font-family: var(--sj-rk-font-ui);
+  color: var(--sj-rk-fg-default);
+  background: var(--sj-rk-bg-page);
+}
+
+.sj-rk-theme *,
+.sj-rk-theme *::before,
+.sj-rk-theme *::after {
+  box-sizing: border-box;
+}
+
+/* globals.css の .sanjuuBrand（青）を RK ハブ内だけ暖色へ */
+.sj-rk-theme .sanjuuBrand {
+  color: var(--sj-rk-accent-warm);
+}
+
+.sj-rk-theme a.sj-rk-inline-link,
+.sj-rk-theme .sj-rk-inline-link {
+  color: var(--sj-rk-link);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.sj-rk-theme a.sj-rk-inline-link:hover,
+.sj-rk-theme .sj-rk-inline-link:hover {
+  text-decoration: underline;
+}

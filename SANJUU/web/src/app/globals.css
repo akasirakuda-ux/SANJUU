@@ -35,6 +35,12 @@ body {
   overflow-x: hidden;
 }
 
+body > .sj-rk-theme {
+  flex: 1;
+  width: 100%;
+  min-height: 100%;
+}
+
 body {
   min-height: 100%;
   display: flex;
@@ -57,8 +63,14 @@ a {
   text-decoration: none;
 }
 
+/** iPad 等: スマホ canvas 拡大時の余白（らくだ本体と同系） */
+html[data-rakuda-phone-canvas='1'] body {
+  background: var(--sj-rk-bg-page, var(--background));
+}
+
 @media (prefers-color-scheme: dark) {
   html {
     color-scheme: dark;
   }
 }
+

@@ -59,6 +59,50 @@
   color: inherit;
 }
 
+.cardRow {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  color: inherit;
+}
+
+.cardRowBody {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 14px;
+  text-align: left;
+}
+
+.cardRowActions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.btnJoin {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid #60a5fa;
+  font-weight: 800;
+  cursor: pointer;
+  background: rgba(96, 165, 250, 0.15);
+  color: inherit;
+  white-space: nowrap;
+}
+
+.btnJoin:active {
+  transform: scale(0.98);
+}
+
 .cards {
   display: flex;
   flex-direction: column;

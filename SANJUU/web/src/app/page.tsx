@@ -1,6 +1,5 @@
 import Link from 'next/link';
 import styles from './page.module.css';
-import RakudaTopMirror from '../components/RakudaTopMirror';
 
 async function createRoom(password: string, roomName?: string) {
   const base =
@@ -31,9 +30,8 @@ export default function Home() {
   return (
     <div className={styles.page}>
       <main className={styles.main}>
-        <RakudaTopMirror />
         <header className={styles.header}>
-          <h1 className={styles.title}>30SANJUU</h1>
+          <h1 className={styles.title}>ひと言探し</h1>
           <p className={styles.sub}>
             全員が同じ画面の数字（1〜30）を順番に問わず押していくだけの集団用ミニゲームです。名前入力・チャットはありません。
           </p>

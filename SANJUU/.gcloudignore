@@ -1,0 +1,10 @@
+# Cloud Run `--source` 用: ローカル依存・ビルド成果を送らない（Dockerfile 内で ci/build）
+node_modules
+**/node_modules
+.git
+.env
+.env.*
+!.env.example
+web/.next
+**/.next
+ws/dist

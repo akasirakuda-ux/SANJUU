@@ -1,0 +1,154 @@
+/**
+ * らくだ本体 `AppHeader.tsx` の右上バッジと同寸法・同色（Tailwind 相当を CSS で固定）
+ */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  height: auto;
+  max-width: min(72vw, 20rem);
+  border-radius: 0.75rem;
+  border: 1px solid rgb(252 211 77 / 0.8);
+  background: rgb(255 251 235 / 0.95);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06);
+  padding: 0.25rem 0.625rem;
+  text-align: right;
+}
+
+.wrap > * {
+  flex-shrink: 0;
+}
+
+.toneGoogle {
+  color: #075985;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.375;
+  min-height: 1rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toneGuest {
+  color: rgb(120 53 15);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.375;
+  min-height: 1rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toneNone {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.375;
+  min-height: 1rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toneLoading {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.375;
+  min-height: 1rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loginBtn {
+  display: block;
+  width: 100%;
+  text-align: right;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loginBtn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.lineNet {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.375;
+  min-height: 1rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.online {
+  color: #065f46;
+}
+
+.offline {
+  color: #64748b;
+}
+
+.profile {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: #1e293b;
+  min-height: 1.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+@media (min-width: 640px) {
+  .profile {
+    font-size: 14px;
+  }
+}
+
+.loginActions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  width: 100%;
+}
+
+.popupHint {
+  font-size: 10px;
+  font-weight: 600;
+  color: #0c4a6e;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popupHint:hover {
+  opacity: 0.9;
+}

@@ -2,6 +2,7 @@
   "name": "rakuda-pro-root",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "workspaces": [
     "web",
     "ws"
@@ -9,12 +10,12 @@
   "scripts": {
     "dev:web": "npm --prefix web run dev",
     "dev:ws": "npm --prefix ws run dev",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build --workspace=ws && npm run build --workspace=web && node scripts/copy-next-static.mjs",
+    "start": "node scripts/prod-start.mjs"
   },
   "dependencies": {
+    "http-proxy": "^1.18.1",
     "react-is": "^18.3.1"
-  },
-  "devDependencies": {
-    "http-proxy": "^1.18.1"
   }
 }
