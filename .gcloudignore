@@ -1,4 +1,4 @@
-# Keep Cloud Run source uploads small.
+# Keep Cloud Run source uploads small (rakuda-api).
 node_modules
 dist
 .git
@@ -6,4 +6,11 @@ dist
 npm-debug.log
 yarn-debug.log
 yarn-error.log
+SANJUU
+flutter_slide_puzzle_idle
+.cursor
+docs
+*.md
+.env*
+!.env.example
 

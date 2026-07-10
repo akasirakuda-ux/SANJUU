@@ -1,19 +1,30 @@
 {
   "name": "ことば探し-pro",
   "private": true,
-  "version": "2.0.11",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:sanjuu": "node scripts/dev-sanjuu-only.mjs",
     "dev:rakuda": "vite",
     "build": "vite build",
+    "build:robo-pickup-server": "node scripts/build-robo-pickup-server.mjs",
+    "seed:robo-pickup": "node scripts/seed-robo-pickup-lounge.mjs",
+    "setup:robo-pickup-scheduler": "node scripts/setup-robo-pickup-scheduler.mjs",
+    "setup:relay-story-scheduler": "node scripts/setup-relay-story-scheduler.mjs",
+    "seed:relay-story-today": "node scripts/seed-today-relay-prompt.mjs",
+    "seed:hub-visitor-baseline": "node scripts/seed-hub-visitor-baseline.mjs",
     "verify:hosting-dist": "node scripts/verify-hosting-dist.mjs",
     "deploy:hosting": "vite build && node scripts/verify-hosting-dist.mjs && firebase deploy --only hosting",
+    "deploy:firestore:rules": "firebase deploy --only firestore:rules",
+    "deploy:hosting:with-rules": "vite build && node scripts/verify-hosting-dist.mjs && firebase deploy --only hosting,firestore:rules",
+    "deploy:rakuda-api": "node scripts/deploy-rakuda-api.mjs",
+    "setup:green-gate-stripe": "node scripts/setup-green-gate-stripe.mjs",
     "start": "node server.mjs",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test:firestore-time": "tsx src/lib/firestoreTime.selftest.ts"
+    "test:firestore-time": "tsx src/lib/firestoreTime.selftest.ts && tsx src/lib/hundredHostRecruitLimit.selftest.ts && tsx src/lib/hundredAutoTargetWord.selftest.ts",
+    "test:slide-puzzle-idle": "tsx src/lib/slidePuzzleIdle/engine.selftest.ts && tsx src/lib/slidePuzzleIdle/storage.selftest.ts && tsx src/lib/slidePuzzleSolver.selftest.ts && tsx src/lib/shussekiDailyClears.selftest.ts && tsx src/lib/shussekiRegularEmoji.selftest.ts"
   },
   "dependencies": {
     "@google/genai": "^1.46.0",
@@ -21,7 +32,7 @@
     "@types/express": "^5.0.6",
     "autoprefixer": "^10.4.20",
     "express": "^5.2.1",
-    "firebase": "^12.11.0",
+    "firebase": "^12.15.0",
     "firebase-admin": "^13.9.0",
     "framer-motion": "^12.34.3",
     "html2canvas": "^1.4.1",
@@ -32,6 +43,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "stripe": "^17.7.0",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
     "vite-plugin-pwa": "^1.2.0"
@@ -39,10 +51,16 @@
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "esbuild": "^0.25.12",
     "typescript": "^5.9.3",
     "vite": "^7.3.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "protobufjs", "@firebase/util", "@google/genai"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "protobufjs",
+      "@firebase/util",
+      "@google/genai"
+    ]
   }
 }

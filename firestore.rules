@@ -18,7 +18,11 @@ service cloud.firestore {
 
     // 管理者 UID（src/constants/renrakuAdmin.ts の ADMIN_UIDS[0] と同一）
     function isRenrakuAdminUid() {
-      return request.auth != null && request.auth.uid == '6YGjqqBB0RejB5N01WUYupEogh53';
+      return request.auth != null && (
+        request.auth.uid == '6YGjqqBB0RejB5N01WUYupEogh53'
+        || request.auth.uid == 'e64TlfCKEnOB8DeqCwobZUasnHT2'
+        || request.auth.uid == 'e64TIfCKEnO8BDEqCwobZUasnHT2'
+      );
     }
 
     // Gmail: ローカル部のドット無視、googlemail.com → gmail.com（クライアントの normalizeEmailForRenrakuAdmin と同等）
@@ -47,9 +51,89 @@ service cloud.firestore {
         || isRenrakuAdminEmailToken();
     }
 
+    function isExcludedFromRakuda() {
+      return !isAdmin() && (
+        exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+        || (
+          exists(/databases/$(database)/documents/user_moderation/$(request.auth.uid))
+          && get(/databases/$(database)/documents/user_moderation/$(request.auth.uid)).data.redActive == true
+        )
+      );
+    }
+
     // 在籍カウント（usePresence: system/viewers/active/{uid}）
     match /system/viewers/active/{uid} {
       allow read, write: if true;
+    }
+
+    // 累計来場者（トップ・1セッション1回加算）
+    match /system/hub_visitor_total {
+      allow read, write: if true;
+    }
+
+    function ouenNoteTextOk(text) {
+      return text is string && text.size() > 0 && text.size() <= 1800;
+    }
+
+    function ouenNoteOptionalFieldOk(text, maxLen) {
+      return text == null || (text is string && text.size() <= maxLen);
+    }
+
+    function ouenNoteTopicFieldsOk(data) {
+      return ouenNoteOptionalFieldOk(data.title, 60)
+        && ouenNoteOptionalFieldOk(data.consultantProfile, 80)
+        && ouenNoteOptionalFieldOk(data.goal, 200)
+        && ouenNoteOptionalFieldOk(data.situation, 400)
+        && ouenNoteOptionalFieldOk(data.feelings, 300)
+        && ouenNoteOptionalFieldOk(data.triedResearch, 300);
+    }
+
+    function ouenNoteCommentTextOk(text) {
+      return text is string && text.size() > 0 && text.size() <= 200;
+    }
+
+    match /ouen_note_topics/{topicId} {
+      allow read: if isGoogleSignedIn() && !isExcludedFromRakuda();
+      allow create: if isGoogleSignedIn()
+        && !isExcludedFromRakuda()
+        && request.resource.data.authorUid == request.auth.uid
+        && ouenNoteTextOk(request.resource.data.body)
+        && ouenNoteTopicFieldsOk(request.resource.data)
+        && request.resource.data.deleted == false
+        && request.resource.data.commentCount == 0;
+      allow update: if isAdmin()
+        || (isGoogleSignedIn()
+          && !isExcludedFromRakuda()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentCount', 'lastCommentAtMs'])
+          && request.resource.data.commentCount is int
+          && request.resource.data.commentCount >= resource.data.commentCount
+          && (!('lastCommentAtMs' in request.resource.data)
+            || (request.resource.data.lastCommentAtMs is int
+              && request.resource.data.lastCommentAtMs >= resource.data.get('lastCommentAtMs', 0))));
+      allow delete: if isAdmin();
+
+      match /comments/{commentId} {
+        allow read: if isGoogleSignedIn() && !isExcludedFromRakuda();
+        allow create: if isGoogleSignedIn()
+          && !isExcludedFromRakuda()
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.topicId == topicId
+          && ouenNoteCommentTextOk(request.resource.data.text)
+          && request.resource.data.deleted == false;
+        allow update: if isAdmin();
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /ouen_note_profiles/{uid} {
+      allow read: if isGoogleSignedIn() && !isExcludedFromRakuda() && request.auth.uid == uid;
+      allow create, update: if isGoogleSignedIn()
+        && !isExcludedFromRakuda()
+        && request.auth.uid == uid
+        && ouenNoteOptionalFieldOk(request.resource.data.ageText, 40)
+        && ouenNoteOptionalFieldOk(request.resource.data.genderText, 40)
+        && ouenNoteOptionalFieldOk(request.resource.data.occupationText, 40);
+      allow delete: if isAdmin();
     }
 
     // 公開メッセージ（誰でも読む／作成は一般ユーザーも可 ※ isAdmin 不要）
@@ -57,15 +141,31 @@ service cloud.firestore {
       allow read: if true;
       // create: 認証済みかつ出禁でなければ可（管理者であることは不要）
       allow create: if isSignedIn()
-        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid));
-      // update/delete: モデレーションは管理者のみ
+        && !isExcludedFromRakuda();
+      // update/delete: モデレーションは管理者のみ（募集は本人も削除可）
       allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow delete: if isAdmin()
+        || (isSignedIn()
+          && !isExcludedFromRakuda()
+          && resource.data.type == 'recruit'
+          && resource.data.fromUserUid == request.auth.uid);
     }
 
-    // 30 日経過かつ非ピン留めの投稿は、ログイン済みユーザーによる掲示板オープン時のクリーンアップで削除可
+    function publicMessageAuthorIsAdminUid(uid) {
+      return uid == '6YGjqqBB0RejB5N01WUYupEogh53'
+        || uid == 'e64TlfCKEnOB8DeqCwobZUasnHT2'
+        || uid == 'e64TIfCKEnO8BDEqCwobZUasnHT2';
+    }
+
+    function publicMessageIsProtectedFromExpiry() {
+      return resource.data.postKind == 'announcement'
+        || publicMessageAuthorIsAdminUid(resource.data.fromUserUid);
+    }
+
+    // 30 日経過かつ非ピン留めの「みんなの会話」投稿のみクリーンアップ可（連絡事項・管理者投稿は永久保持）
     function publicMessageExpired() {
-      return resource.data.createdAt < request.time - duration.value(30, 'd');
+      return !publicMessageIsProtectedFromExpiry()
+        && resource.data.createdAt < request.time - duration.value(30, 'd');
     }
 
     function publicMessagePinned() {
@@ -73,57 +173,72 @@ service cloud.firestore {
     }
 
     function stalePublicMessageForReactionDelete(postId) {
-      return get(/databases/$(database)/documents/public_messages/$(postId)).data.createdAt
-        < request.time - duration.value(30, 'd')
-        && get(/databases/$(database)/documents/public_messages/$(postId)).data.pinned != true;
+      let post = get(/databases/$(database)/documents/public_messages/$(postId)).data;
+      return post.postKind != 'announcement'
+        && !publicMessageAuthorIsAdminUid(post.fromUserUid)
+        && post.createdAt < request.time - duration.value(30, 'd')
+        && post.pinned != true;
     }
 
     // コミュニティ掲示板（public_messages）
     // 一覧・単体取得は誰でも
     match /public_messages/{postId} {
       allow get, list: if true;
-      // create: ログイン済み（匿名可）・出禁でなければ可・fromUserUid は本人 UID（管理者であることは不要）
+      // create: ログイン済み（匿名可）・出禁でなければ可・fromUserUid は本人 UID
+      // postKind: chat（省略可）= 一般投稿 / announcement = 管理者のみ（連絡事項タブ）
       allow create: if isSignedIn()
-        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
-        && request.resource.data.fromUserUid == request.auth.uid;
+        && !isExcludedFromRakuda()
+        && request.resource.data.fromUserUid == request.auth.uid
+        && (
+          !('postKind' in request.resource.data)
+          || request.resource.data.postKind == 'chat'
+          || (request.resource.data.postKind == 'announcement' && isAdmin())
+        );
       // ピン留めは管理者のみ（既存 UI）
       allow update: if isAdmin();
       // 削除は管理者、本人（自分の投稿のみ・ピン留め以外）、または 30 日超え・非ピンの整理バッチ（ログイン済み・非ブロック）
       allow delete: if isAdmin()
         || (isSignedIn()
-          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && !isExcludedFromRakuda()
           && request.auth.uid == resource.data.fromUserUid
           && !publicMessagePinned())
         || (isSignedIn()
-          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && !isExcludedFromRakuda()
           && publicMessageExpired()
           && !publicMessagePinned());
 
       match /reactions/{uid} {
         allow read: if true;
         allow create, update: if isSignedIn()
-          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && !isExcludedFromRakuda()
           && request.auth.uid == uid
           && request.resource.data.keys().hasOnly(['emoji'])
           && request.resource.data.emoji is string
           && request.resource.data.emoji.size() <= 32;
-        allow delete: if isSignedIn()
-          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
-          && (
-            request.auth.uid == uid
-            || stalePublicMessageForReactionDelete(postId)
-          );
+        allow delete: if isAdmin()
+          || (isSignedIn()
+            && !isExcludedFromRakuda()
+            && (
+              request.auth.uid == uid
+              || stalePublicMessageForReactionDelete(postId)
+            ));
       }
     }
 
     // 在席情報（一覧は誰でも読める／更新は本人のみ）
     match /renraku_presence/{uid} {
       allow read: if true;
-      allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+      allow create, update, delete: if isSignedIn() && request.auth.uid == uid && !isExcludedFromRakuda();
     }
 
     // ブロック状態（本人は自分の doc を読める／管理者は全件 read/write 可）
     match /blockedUsers/{uid} {
+      allow read: if (isSignedIn() && request.auth.uid == uid) || isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // イエロー／レッドカード（本人は自分の doc を読める／付与・解除は管理者のみ）
+    match /user_moderation/{uid} {
       allow read: if (isSignedIn() && request.auth.uid == uid) || isAdmin();
       allow create, update, delete: if isAdmin();
     }
@@ -133,23 +248,131 @@ service cloud.firestore {
       // read: 管理者、または投稿者本人（自分の伝言を表示するため）
       allow read: if isAdmin()
         || (isSignedIn() && resource.data.fromUserUid == request.auth.uid);
-      // create: 認証済み・出禁でなければ可・fromUserUid は本人 UID（管理者であることは不要）
-      allow create: if isSignedIn()
-        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+      // create: Google ログインのみ（返信を端末をまたいで確実に届ける）
+      allow create: if isGoogleSignedIn()
+        && !isExcludedFromRakuda()
         && request.resource.data.fromUserUid == request.auth.uid;
+      // 管理者: 返信・既読・モデレーション
       allow update: if isAdmin();
       // delete: 本人は自分の伝言を削除できる（ゲスト側のゴミ箱ボタン用）
       allow delete: if isAdmin()
         || (isSignedIn() && resource.data.fromUserUid == request.auth.uid);
+
+      // 返信本文（差出人 uid のみ read 可。掲示板タイムラインには載せない）
+      match /private_reply/{replyId} {
+        function parentSenderUid() {
+          return get(/databases/$(database)/documents/renraku_private/$(docId)).data.fromUserUid;
+        }
+
+        // 親の伝言を送った本人（＝ fromUserUid）のみ読める。toUserUid は書き込み整合用で、欠損・旧データでも読めるよう親のみで判定する。
+        allow read: if isAdmin()
+          || (isSignedIn() && parentSenderUid() == request.auth.uid);
+        allow create, update: if isAdmin()
+          && request.resource.data.keys().hasOnly(['text', 'toUserUid', 'createdAt'])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.toUserUid is string
+          && request.resource.data.toUserUid == parentSenderUid();
+        allow delete: if isAdmin();
+      }
+    }
+
+    // 連絡帳の通報（作成はログイン済み・非出禁のみ／閲覧は管理者のみ）
+    match /renraku_reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn()
+        && !isExcludedFromRakuda()
+        && request.resource.data.keys().hasOnly([
+          'targetType', 'targetId', 'reason', 'detail', 'reporterUid', 'pagePath',
+          'targetAuthorUid', 'targetAuthorName', 'createdAt'
+        ])
+        && request.resource.data.targetType is string
+        && request.resource.data.targetType in [
+          'public_messages', 'renraku_public', 'renraku_private',
+          'ouen_note_topic', 'ouen_note_comment'
+        ]
+        && request.resource.data.targetId is string
+        && request.resource.data.targetId.size() > 0
+        && request.resource.data.targetId.size() <= 128
+        && request.resource.data.reason is string
+        && request.resource.data.reason in ['impersonation', 'harassment', 'spam', 'inappropriate', 'other']
+        && request.resource.data.detail is string
+        && request.resource.data.detail.size() <= 500
+        && request.resource.data.reporterUid is string
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.pagePath is string
+        && request.resource.data.pagePath.size() <= 240
+        && request.resource.data.targetAuthorUid is string
+        && request.resource.data.targetAuthorUid.size() <= 128
+        && request.resource.data.targetAuthorName is string
+        && request.resource.data.targetAuthorName.size() <= 64
+        && request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ロボ常設の hundred_public 初回作成（hostUid はロボ用プレースホルダ）
+    function isRoboPickupLoungePublicSeed(docId) {
+      return request.resource.data.roboPickupLounge == true
+        && request.resource.data.roomId == docId
+        && (
+          docId == 'robo-pickup-lounge'
+            && request.resource.data.hostUid == '__robo_pickup_lounge__'
+          || docId == 'robo-pickup-lounge-emoji'
+            && request.resource.data.hostUid == '__robo_pickup_lounge_emoji__'
+        );
     }
 
     // 百人一首公開募集（誰でも読める／書き込みはログイン済みかつ host が本人のみ）
     match /hundred_public/{docId} {
       allow read: if true;
       allow create: if request.auth != null
-        && request.resource.data.hostUid == request.auth.uid;
-      allow update, delete: if request.auth != null
-        && resource.data.hostUid == request.auth.uid;
+        && !isExcludedFromRakuda()
+        && (
+          request.resource.data.hostUid == request.auth.uid
+          || isRoboPickupLoungePublicSeed(docId)
+        );
+      allow update: if request.auth != null
+        && !isExcludedFromRakuda()
+        && (
+          resource.data.hostUid == request.auth.uid
+          || (
+            resource.data.roboPickupLounge == true
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'targetWord',
+              'pickupCharset',
+              'boardSize',
+              'boardCols',
+              'boardRows',
+              'updatedAt'
+            ])
+          )
+        );
+      // 終了済みルームの掲示は参加者も削除可（クリア後一覧に残る不具合対策）
+      // お題とお題のあいだ（recruiting + cleared/timeout）も同様に削除可
+      allow delete: if request.auth != null
+        && (
+          resource.data.hostUid == request.auth.uid
+          || (
+            resource.data.roomId is string
+            && (
+              get(/databases/$(database)/documents/hundred_rooms/$(resource.data.roomId)).data.status == 'finished'
+              || (
+                get(/databases/$(database)/documents/hundred_rooms/$(resource.data.roomId)).data.status == 'recruiting'
+                && (
+                  get(/databases/$(database)/documents/hundred_rooms/$(resource.data.roomId)).data.endReason == 'cleared'
+                  || get(/databases/$(database)/documents/hundred_rooms/$(resource.data.roomId)).data.endReason == 'timeout'
+                )
+              )
+            )
+          )
+        );
+    }
+
+  // らくだロボ常設（お題切替時に在室外 player doc を掃除するため、本人以外の delete も許可）
+    function isRoboPickupLoungeHundredRoom(roomId) {
+      return roomId == 'robo-pickup-lounge' || roomId == 'robo-pickup-lounge-emoji';
     }
 
     // みんなであそぶ用ルーム状態（開始状態を共有する）
@@ -157,22 +380,26 @@ service cloud.firestore {
       allow read: if true;
       // ルーム作成はログイン済みなら許可（確実に作成できるようにする）
       // hostUid の整合性はアプリ側で必ず request.auth.uid を書く前提
-      allow create: if isSignedIn();
+      allow create: if isSignedIn() && !isExcludedFromRakuda();
       // 更新: ログイン済みユーザー全員（ホストの開始・参加者の playerCount / foundWords 同期のため）
       // サブコレーション players は下で本人のみに制限
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn() && request.auth.uid == resource.data.hostUid;
+      allow update: if isSignedIn() && !isExcludedFromRakuda();
+      allow delete: if isSignedIn() && !isExcludedFromRakuda() && request.auth.uid == resource.data.hostUid;
 
-      // 参加者（自分の uid doc だけ書ける）
+      // 参加者（create/update は本人のみ。delete は本人、またはロボ常設の掃除）
       match /players/{uid} {
         allow read: if true;
-        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+        allow create, update: if isSignedIn() && request.auth.uid == uid && !isExcludedFromRakuda();
+        allow delete: if isSignedIn() && !isExcludedFromRakuda() && (
+          request.auth.uid == uid
+          || isRoboPickupLoungeHundredRoom(roomId)
+        );
       }
 
       // 問題一覧（番号・正誤・履歴）。誰でも閲覧／書き込みはログイン済み（ホスト処理と将来の同期用）
       match /problems/{problemId} {
         allow read: if true;
-        allow create, update, delete: if isSignedIn();
+        allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
       }
 
       // 待機ロビーのチャット（短文）
@@ -182,7 +409,7 @@ service cloud.firestore {
       match /lobby_messages/{messageId} {
         allow read: if true;
         allow create: if isSignedIn()
-          && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid))
+          && !isExcludedFromRakuda()
           && request.resource.data.uid == request.auth.uid;
         allow update, delete: if isAdmin();
       }
@@ -191,40 +418,185 @@ service cloud.firestore {
     // syncRooms（同期用：みんなであそぶ／同期盤面）
     match /syncRooms/{roomId} {
       allow read: if true;
-      allow create, update, delete: if isSignedIn();
+      allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
+    }
+
+    // リバーシ 1対1 ルーム
+    match /reversi_rooms/{roomId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
+    }
+
+    // 五目並べ 1対1 ルーム
+    match /gomoku_rooms/{roomId} {
+      allow read: if true;
+      allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
     }
 
     // users/{uid}/logs（本人のログ）
     match /users/{uid}/logs/{logId} {
-      allow read, write: if isSignedIn() && request.auth.uid == uid;
+      allow read, write: if isSignedIn() && request.auth.uid == uid && !isExcludedFromRakuda();
     }
 
     // 端末間同期プロフィール（useAppShell: rk_users/{uid}）
     match /rk_users/{uid} {
-      allow read, create, update: if isSignedIn()
+      allow read: if isAdmin()
+        || (isSignedIn()
+          && request.auth.uid == uid
+          && !isExcludedFromRakuda());
+      allow create, update: if isSignedIn()
         && request.auth.uid == uid
-        && !exists(/databases/$(database)/documents/blockedUsers/$(request.auth.uid));
+        && !isExcludedFromRakuda();
       allow delete: if false;
+    }
+
+    // 広告貢献ポイント（「出たであろう回数」— 本人のみ read/write・加算のみ）
+    match /rk_ad_contribution/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create, update: if isSignedIn()
+        && request.auth.uid == uid
+        && !isExcludedFromRakuda()
+        && request.resource.data.keys().hasOnly(['wouldShowCount', 'points', 'updatedAtMs', 'measurementVersion'])
+        && request.resource.data.wouldShowCount is number
+        && request.resource.data.points is number
+        && request.resource.data.updatedAtMs is number
+        && request.resource.data.measurementVersion is number
+        && request.resource.data.wouldShowCount >= 0
+        && request.resource.data.points >= 0
+        && (
+          !resource.exists
+          || (
+            request.resource.data.wouldShowCount >= resource.data.wouldShowCount
+            && request.resource.data.points >= resource.data.points
+            && request.resource.data.wouldShowCount - resource.data.wouldShowCount <= 5
+            && request.resource.data.points - resource.data.points <= 10
+          )
+        );
+      allow delete: if false;
+    }
+
+    // 緑のゲート Stripe サブスク（サーバー Webhook のみ書き込み）
+    // 緑枠バッジ表示のため、ログイン済みは他者の有効期限のみ read 可（書込はサーバーのみ）
+    match /rk_green_gate/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // 感謝の1年無料パス（サーバー API のみ書き込み）
+    match /rk_green_pass/{code} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // 緑券の紹介者・配布担当（サーバー API のみ書き込み）
+    match /rk_green_referrer/{referrerId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // YouTube LIVE 開始通知（管理者 ON → 全員に3秒バナーのきっかけ）
+    match /rk_site_public/live {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // 連続小説（起承転結・4話完結）
+    function relayStorySegmentTextOk(text) {
+      return text is string && text.size() > 0 && text.size() <= 200;
+    }
+
+    function relayStorySegmentShape(seg, authorUid) {
+      return seg.keys().hasAll(['kind', 'text', 'authorUid', 'authorNick', 'authorEmoji'])
+        && seg.authorUid == authorUid
+        && relayStorySegmentTextOk(seg.text);
+    }
+
+    match /rk_relay_stories/{storyId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && !isExcludedFromRakuda()
+        && request.resource.data.status == 'open'
+        && request.resource.data.currentStep == 1
+        && request.resource.data.participantUids.size() == 1
+        && request.resource.data.participantUids[0] == request.auth.uid
+        && request.resource.data.segments.size() == 1
+        && relayStorySegmentShape(request.resource.data.segments[0], request.auth.uid);
+      allow update: if isSignedIn()
+        && !isExcludedFromRakuda()
+        && resource.data.status == 'open'
+        && request.resource.data.segments.size() == resource.data.segments.size() + 1
+        && request.resource.data.currentStep == resource.data.currentStep + 1
+        && request.resource.data.participantUids.size() == resource.data.participantUids.size() + 1
+        && request.resource.data.participantUids[request.resource.data.participantUids.size() - 1] == request.auth.uid
+        && !(request.auth.uid in resource.data.participantUids)
+        && relayStorySegmentShape(
+          request.resource.data.segments[resource.data.segments.size()],
+          request.auth.uid
+        )
+        && (
+          (request.resource.data.currentStep == 4 && request.resource.data.status == 'complete')
+          || (request.resource.data.currentStep < 4 && request.resource.data.status == 'open')
+        );
+      allow update: if isSignedIn()
+        && !isExcludedFromRakuda()
+        && resource.data.status == 'complete'
+        && request.resource.data.status == 'complete'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewCount', 'ratingSum'])
+        && request.resource.data.reviewCount is int
+        && request.resource.data.ratingSum is int
+        && request.resource.data.reviewCount >= 0
+        && request.resource.data.ratingSum >= 0
+        && request.resource.data.ratingSum <= request.resource.data.reviewCount * 5;
+      allow delete: if isAdmin();
+
+      match /reviews/{reviewerUid} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && !isExcludedFromRakuda()
+          && reviewerUid == request.auth.uid
+          && get(/databases/$(database)/documents/rk_relay_stories/$(storyId)).data.status == 'complete'
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 300
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.authorNick is string
+          && request.resource.data.authorEmoji is string
+          && request.resource.data.createdAtMs is int;
+        allow update: if isSignedIn()
+          && !isExcludedFromRakuda()
+          && reviewerUid == request.auth.uid
+          && resource.data.authorUid == request.auth.uid
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5
+          && request.resource.data.text is string
+          && request.resource.data.text.size() <= 300
+          && request.resource.data.authorUid == request.auth.uid;
+        allow delete: if isAdmin();
+      }
     }
 
     // マルチプレイ rooms（ことば探し同期）
     match /rooms/{roomId} {
       allow read: if true;
-      allow create, update, delete: if isSignedIn();
+      allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
 
       match /players/{uid} {
         allow read: if true;
-        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+        allow create, update, delete: if isSignedIn() && request.auth.uid == uid && !isExcludedFromRakuda();
       }
 
       match /board/{docId} {
         allow read: if true;
-        allow create, update, delete: if isSignedIn();
+        allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
       }
 
       match /progress/{docId} {
         allow read: if true;
-        allow create, update, delete: if isSignedIn();
+        allow create, update, delete: if isSignedIn() && !isExcludedFromRakuda();
       }
     }
 

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>他のテーブルの遊び方 | らくだ珈琲🐫☕</title>
+    <meta
+      name="description"
+      content="らくだ珈琲の他のテーブルの遊び方。ひと言探し、連絡帳、募集掲示板、連続小説、100卓までの設計について。"
+    />
+    <link rel="canonical" href="https://rakuda.coffee/guide/sanjuu/" />
+    <link rel="icon" type="image/svg+xml" href="/pwa-512x512.svg" />
+    <style>
+      :root {
+        color-scheme: light;
+        --text: #1e293b;
+        --muted: #64748b;
+        --accent: #00c874;
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --border: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+        line-height: 1.75;
+        color: var(--text);
+        background: var(--bg);
+      }
+      a { color: #0f766e; }
+      .wrap { max-width: 42rem; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+      .lead { color: var(--muted); margin: 0 0 1.5rem; }
+      main {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        padding: 1.25rem 1.5rem;
+      }
+      h2 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+      h2:first-child { margin-top: 0; }
+      ul { padding-left: 1.25rem; }
+      footer { margin-top: 1.5rem; font-size: 0.9rem; color: var(--muted); }
+      footer nav { display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; margin-bottom: 0.75rem; }
+      .home {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.55rem 1rem;
+        background: var(--accent);
+        color: #fff;
+        text-decoration: none;
+        border-radius: 999px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>他のテーブルの遊び方</h1>
+        <p class="lead"><a href="/guide/">遊び方ガイド</a> · らくだ珈琲</p>
+      </header>
+
+      <main>
+        <p>
+          らくだ珈琲には、ことば探し以外にも、メニューから選べる<strong>いろいろなテーブル</strong>があります。
+          ひと言探し・連絡帳（掲示板）・募集掲示板・連続小説などです。
+          「30人で満室」というイメージで、静かに集まって遊べる<strong>居場所</strong>を目指しています。
+          最大100卓まで利用できる設計で、配信中に一緒に遊ぶ利用者も増えています。
+        </p>
+
+        <h2>ひと言探し</h2>
+        <p>
+          ことば探しと似ていますが、盤面から<strong>一つの言葉</strong>を探す形式です。
+          文字数や盤の大きさは募集ごとに異なります。正解を入力するとクリアです。
+          ソロで遊ぶほか、募集掲示板から他の利用者と同じお題で遊べます。
+        </p>
+
+        <h2>連絡帳（掲示板）</h2>
+        <p>
+          利用者が短いメッセージを残せる掲示板です。配信後の感想や、ゲームのお題提案など、
+          静かなやりとりの場として使われています。運営は不適切な投稿を削除することがあります。
+        </p>
+
+        <h2>募集掲示板</h2>
+        <p>
+          「いま一緒に遊びたい」という席を立てたり、ほかの人の席に参加したりできます。
+          ロボ相手の練習席もあります。対戦中は相手の手番を待つ時間もあり、
+          煽りのない、ゆったりした対戦を想定しています。
+        </p>
+
+        <h2>連続小説（リレー物語）</h2>
+        <p>
+          利用者が順番に短い段落を書いて、一つの物語をつなげる機能です。
+          起承転結の構成で読み返すことができ、完結後にレビューを残せます。
+          1人1話のルールなど、みんなで物語を育てるための注意事項があります。
+        </p>
+
+        <h2>ひと言探しなどへ行く方法</h2>
+        <ol>
+          <li><a href="https://rakuda.coffee/">https://rakuda.coffee/</a> を開きます。</li>
+          <li>メニューから「ひと言探し」または「掲示板」を選びます。</li>
+          <li>ひと言探し・募集・連絡帳など、目的の画面を選びます。</li>
+        </ol>
+        <p>
+          ひと言探しなどの一部画面は別URL（Cloud Run）で提供されていますが、
+          入口は常に <strong>https://rakuda.coffee/</strong> からです。
+        </p>
+
+        <h2>保護者の方へ</h2>
+        <ul>
+          <li>Google ログインは任意です。ログインするとニックネームと絵文字が表示されます。</li>
+          <li>本名・住所・電話番号は収集しません。</li>
+          <li>不適切な利用者はブロックし、煽りや悪口を平気で書く行為は許しません。</li>
+          <li>子どもを主役に、競争より<strong>空気</strong>を大切にしています。</li>
+          <li>速さや正確さを競うタイムアタックや順位付けの要素はありません。</li>
+        </ul>
+
+        <h2>関連ページ</h2>
+        <ul>
+          <li><a href="/guide/kotoba/">ことば探しの遊び方</a></li>
+          <li><a href="/guide/">遊び方ガイド（一覧）</a></li>
+        </ul>
+      </main>
+
+      <footer>
+        <p>
+          サイトの説明・規約・お問い合わせ →
+          <a href="/about/">らくだ珈琲について</a>
+        </p>
+        <p>© 2026 らくだ珈琲</p>
+        <a class="home" href="/">らくだ珈琲を開く</a>
+      </footer>
+    </div>
+  </body>
+</html>

@@ -1,17 +1,31 @@
 {
   "firestore": {
-    "rules": "firestore.rules"
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   },
   "hosting": {
     "public": "dist",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "headers": [
       {
+        "source": "/assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
         "source": "/index.html",
         "headers": [
           {
             "key": "Cache-Control",
             "value": "no-cache, no-store, must-revalidate"
+          },
+          {
+            "key": "Cross-Origin-Opener-Policy",
+            "value": "same-origin-allow-popups"
           }
         ]
       },
@@ -21,6 +35,10 @@
           {
             "key": "Cache-Control",
             "value": "no-cache, no-store, must-revalidate"
+          },
+          {
+            "key": "Cross-Origin-Opener-Policy",
+            "value": "same-origin-allow-popups"
           }
         ]
       }
@@ -105,6 +123,30 @@
       {
         "source": "/sanjuu/**",
         "run": { "serviceId": "sanjuu", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/stripe/**",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/green-pass/**",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/session",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/session/**",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/robo-pickup/**",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
+      },
+      {
+        "source": "/api/relay-story/**",
+        "run": { "serviceId": "rakuda-api", "region": "asia-northeast1" }
       },
       { "source": "**", "destination": "/index.html" }
     ]

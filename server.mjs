@@ -3,6 +3,10 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { registerStripeGreenGateApi, registerStripeGreenGateWebhook } from './server/stripeGreenGate.mjs';
+import { registerGreenGatePassApi } from './server/greenGatePass.mjs';
+import { registerRoboPickupLoungeApi } from './server/roboPickupLounge.mjs';
+import { registerRelayStoryTodayPromptApi } from './server/relayStoryTodayPrompt.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,11 +18,26 @@ const distDir = path.join(__dirname, 'dist');
 
 app.disable('x-powered-by');
 
-app.use(express.json({ limit: '64kb' }));
-app.use(express.urlencoded({ extended: false }));
-
 const require = createRequire(import.meta.url);
 const httpProxy = require('http-proxy');
+
+let _admin = null;
+async function getFirebaseAdmin() {
+  if (_admin) return _admin;
+  const [{ initializeApp }, { getAuth }, { getFirestore }] = await Promise.all([
+    import('firebase-admin/app'),
+    import('firebase-admin/auth'),
+    import('firebase-admin/firestore'),
+  ]);
+  const app = initializeApp();
+  _admin = { auth: getAuth(app), db: getFirestore(app) };
+  return _admin;
+}
+
+registerStripeGreenGateWebhook(app, { getFirebaseAdmin, express });
+
+app.use(express.json({ limit: '64kb' }));
+app.use(express.urlencoded({ extended: false }));
 
 /**
  * Canonical host redirect.
@@ -80,24 +99,24 @@ function proxyErr(tag, err) {
 proxySanjuuWeb.on('error', (err) => proxyErr('sanjuu-web', err));
 proxySanjuuWs.on('error', (err) => proxyErr('sanjuu-ws', err));
 
-// Lightweight profile endpoint for cross-app use (e.g. 30SANJUU).
-// If a Firebase ID token is provided, returns the synced profile from `rk_users/{uid}`.
-// Fail-safe: always returns { ok: true, profile: { emoji, nickname } } with empty fields on errors.
-let _admin = null;
-async function getFirebaseAdmin() {
-  if (_admin) return _admin;
-  const [{ initializeApp }, { getAuth }, { getFirestore }] = await Promise.all([
-    import('firebase-admin/app'),
-    import('firebase-admin/auth'),
-    import('firebase-admin/firestore'),
-  ]);
-  // Use Application Default Credentials (Cloud Run / GCP).
-  const app = initializeApp();
-  _admin = { auth: getAuth(app), db: getFirestore(app) };
-  return _admin;
-}
+registerStripeGreenGateApi(app, { getFirebaseAdmin });
+registerGreenGatePassApi(app, { getFirebaseAdmin });
+registerRoboPickupLoungeApi(app, { getFirebaseAdmin });
+registerRelayStoryTodayPromptApi(app, { getFirebaseAdmin });
 
 // Keep /api endpoints above any proxy / SPA fallbacks.
+app.delete(['/api/session', '/api/session/'], (req, res) => {
+  const xfp = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase();
+  const secure =
+    req.secure ||
+    xfp === 'https' ||
+    (typeof process.env.FORCE_SECURE_COOKIE === 'string' && process.env.FORCE_SECURE_COOKIE.trim() === '1');
+  const parts = ['__session=', 'Max-Age=0', 'Path=/', 'HttpOnly', 'SameSite=Lax'];
+  if (secure) parts.push('Secure');
+  res.setHeader('set-cookie', parts.join('; '));
+  res.status(200).json({ ok: true });
+});
+
 app.post(['/api/session', '/api/session/'], async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};

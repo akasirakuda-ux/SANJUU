@@ -6,39 +6,104 @@
     <link rel="apple-touch-icon" href="/pwa-512x512.svg" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <script>
+      (function () {
+        try {
+          var q = new URLSearchParams(location.search);
+          if (q.get('phoneCanvas') === '0') return;
+          var coarse = window.matchMedia('(pointer: coarse)').matches;
+          if (!coarse && q.get('phoneCanvas') !== '1') return;
+          var sw = window.screen.width;
+          var sh = window.screen.height;
+          var shortEdge = Math.min(sw, sh);
+          // スマホは通常 viewport。iPad 等の 390px 拡大は React（useTabletPhoneCanvas）に任せる
+          if (shortEdge < 744) return;
+          if (q.get('phoneCanvas') !== '1') return;
+          var w = window.innerWidth > 410 ? window.innerWidth : sw;
+          var s = Math.min(Math.max(w / 390, 1), 3);
+          var meta = document.querySelector('meta[name="viewport"]');
+          if (!meta) return;
+          meta.setAttribute(
+            'content',
+            'width=390, initial-scale=' +
+              s +
+              ', maximum-scale=' +
+              s +
+              ', user-scalable=no, viewport-fit=cover',
+          );
+          document.documentElement.dataset.rakudaPhoneCanvas = '1';
+        } catch (e) {}
+      })();
+    </script>
     <meta name="theme-color" content="#00c874" />
+    <!-- Apple（従来）+ Chromium 系（mobile-web-app-capable 推奨） -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="ことば探し" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>らくだ珈琲🐫☕</title>
-    <meta name="version" content="2.0.11">
-    <!-- Google Analytics 4 (GA4) -->
-    <script>
-      // Vite injects %VITE_GA_MEASUREMENT_ID% at build time (or leaves as-is if unset).
-      (function () {
-        var GA_ID = '%VITE_GA_MEASUREMENT_ID%';
-        if (!GA_ID || GA_ID.indexOf('G-') !== 0) return;
-
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        window.gtag = gtag;
-        gtag('js', new Date());
-        gtag('config', GA_ID, { 'cookie_flags': 'SameSite=None;Secure' });
-
-        var s = document.createElement('script');
-        s.async = true;
-        s.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(GA_ID);
-        document.head.appendChild(s);
-      })();
+    <meta
+      name="description"
+      content="らくだ珈琲（rakuda.coffee）は、子どもを主役にした静かな居場所。ことば探し・三十・連絡帳など、ゆるやかに遊べるWebサイトです。"
+    />
+    <link rel="canonical" href="https://rakuda.coffee/" />
+    <link rel="sitemap" type="application/xml" href="/sitemap.xml" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "らくだ珈琲",
+        "url": "https://rakuda.coffee/",
+        "description": "子どもを主役にした静かな居場所。ことば探し・三十・ミニゲームなど、ゆるやかに遊べるWebサイト。",
+        "inLanguage": "ja",
+        "publisher": {
+          "@type": "Organization",
+          "name": "らくだ珈琲",
+          "url": "https://rakuda.coffee/about/"
+        }
+      }
     </script>
-    <!-- Google AdSense (ca-pub-7810798546990694) -->
-    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7810798546990694"
-      crossorigin="anonymous"></script>
+    <meta name="version" content="1.0.3-tile-layout-fix">
+    <!-- GA4: vite injectGa4Tag（VITE_GA_MEASUREMENT_ID）+ src/lib/initGa.ts（SPA 遷移） -->
+    <!-- 広告: バナー（AdSense 固定帯）は不使用。リワード相当の全面はアプリ内（AppLayout ポータル） -->
+    <!-- AdSense: サイト所有確認（pub-7642612812471632 / uratomonaoki0358） -->
+    <script
+      async
+      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-7642612812471632"
+      crossorigin="anonymous"
+    ></script>
   </head>
   <body>
+    <noscript>
+      <main style="max-width: 40rem; margin: 1.5rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; line-height: 1.7">
+        <h1>らくだ珈琲🐫☕</h1>
+        <p>
+          子どもを主役にした静かな居場所のWebサイトです。ことば探し・三十（ひと言探し・連絡帳）・しゅっせき簿・
+          9×9数字パズル・オセロ・五目並べ・スライドパズルなど、ゆるやかに遊べます。
+          JavaScript を有効にするとアプリが起動します。
+        </p>
+        <p>
+          ひらがなの言葉探しパズルを中心に、読み・語彙・論理的思考を楽しめる内容です。
+          YouTube等の配信と併用し、配信中に同じゲームで一緒に遊ぶ利用者もいます。
+          ログインは必須ではなく、本名・住所・電話番号は収集しません。
+          速さや正確さを競う要素はなく、自分のペースで遊べます。
+        </p>
+        <nav aria-label="サイト情報">
+          <a href="/about/">らくだ珈琲について</a> ·
+          <a href="/guide/">遊び方ガイド</a> ·
+          <a href="/guide/parents/">保護者の方へ</a> ·
+          <a href="/guide/kotoba/">ことば探し</a> ·
+          <a href="/guide/minigames/">ミニゲーム</a> ·
+          <a href="/privacy/">プライバシーポリシー</a> ·
+          <a href="/terms/">利用規約</a> ·
+          <a href="/contact/">お問い合わせ</a> ·
+          <a href="/tokushoho/">特定商取引法に基づく表記</a>
+        </nav>
+      </main>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

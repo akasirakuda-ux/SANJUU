@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "public_messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "postKind", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fromUserUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
